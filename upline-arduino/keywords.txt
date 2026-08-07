@@ -1,0 +1,61 @@
+#######################################
+# Syntax coloring for the Upline library
+# NOTE: fields below are separated by a TAB, not spaces.
+#######################################
+
+#######################################
+# Classes and datatypes (KEYWORD1)
+#######################################
+
+Upline	KEYWORD1
+UplineDevice	KEYWORD1
+UplineResult	KEYWORD1
+UplinePairHandler	KEYWORD1
+UplinePairHandlerWithContext	KEYWORD1
+
+#######################################
+# Methods and functions (KEYWORD2)
+#######################################
+
+poll	KEYWORD2
+feed	KEYWORD2
+onPair	KEYWORD2
+beginRecord	KEYWORD2
+endRecord	KEYWORD2
+addText	KEYWORD2
+addInt	KEYWORD2
+addBool	KEYWORD2
+addFlag	KEYWORD2
+addFixed	KEYWORD2
+addBase64	KEYWORD2
+sendText	KEYWORD2
+sendInt	KEYWORD2
+sendError	KEYWORD2
+sendSchema	KEYWORD2
+sendHeartbeat	KEYWORD2
+uplineOnKeyValPair	KEYWORD2
+uplineParseRecord	KEYWORD2
+uplineUnescapeInPlace	KEYWORD2
+uplineIsKeyAllowed	KEYWORD2
+uplineFormatScaled	KEYWORD2
+uplineParseScaled	KEYWORD2
+uplineDecodeBase64	KEYWORD2
+
+#######################################
+# Constants (LITERAL1)
+#######################################
+
+UPLINE_SCHEMA	LITERAL1
+UPLINE_RX_BUFFER_SIZE	LITERAL1
+UPLINE_HEARTBEAT_MS	LITERAL1
+UPLINE_SCHEMA_BROADCAST_MS	LITERAL1
+UPLINE_ENABLE_FIXED	LITERAL1
+UPLINE_ENABLE_BASE64	LITERAL1
+UPLINE_TRANSMIT_ONLY	LITERAL1
+UPLINE_MILLIS	LITERAL1
+UplineOk	LITERAL1
+UplineNotUpline	LITERAL1
+UplineBadEscape	LITERAL1
+UplineTruncated	LITERAL1
+UplineTrailing	LITERAL1
+UplineBadKey	LITERAL1
