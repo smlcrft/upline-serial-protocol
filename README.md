@@ -6,9 +6,26 @@
 ^temp|23.45~rh|48~fan|1^
 ```
 
-**Status:** draft v1 (`ver|1`) · **Media type:** `text/vnd.upline` (proposed)
+**Status:** v1 (`ver|1`)
 
 Upline gives any serial-capable device a predictable way to publish state, accept commands, and describe itself — cheaply enough to run on a 20-year-old 8-bit microcontroller, and structured enough that a host can build a complete interface for a device it has never seen before.
+
+> **You do not have to implement this yourself.**
+>
+> **[`upline-arduino/`](upline-arduino/) is a complete, tested implementation** — one header, drop it in, and any Arduino or C++-capable board speaks Upline:
+>
+> ```cpp
+> #include <upline.hpp>
+> ```
+>
+> - **Small.** A complete device — codec, `fixN`, base64url, descriptor, heartbeat, telemetry, 128-byte receive buffer — is **3,900 B of flash and 364 B of SRAM** on an Uno, and fits an **ATtiny85** with 8 KB flash and 512 B of RAM. The decode core alone is 436 B.
+> - **Optimized.** Header-only. No allocation, no libc, no floating point, no `String`. Anything you never call is never linked, so unused features cost nothing.
+> - **Tested.** Compiled clean on AVR (ATmega8/168/328P, ATtiny85, ATtiny1614), SAMD21/SAMD51, RP2040, RP2350 (ARM and RISC-V), ESP32 / S3 / C3, and Teensy 4.1. All 61 conformance vectors in §16 pass.
+> - **Not Arduino-only.** Supply any port with `available()`, `read()`, and `write(uint8_t)`, then define `UPLINE_MILLIS()`.
+>
+> Three worked examples ship with it, including a servo-and-temperature node on an ATtiny85 and the onboard RGB plus die temperature on an ItsyBitsy M4. CC0, like this spec.
+>
+> **The rest of this document is the wire format** — read it to write your own implementation, to build the host side, or to check a detail. You do not need it to put an Upline device on a bench.
 
 ---
 
