@@ -41,8 +41,8 @@ UPLINE_SCHEMA(itsyBitsySchema,
   "~name|ItsyBitsy M4"
   "~desc|Onboard RGB and die temperature"
   "~ver|1"
-  "~rgb|int|0|0|16777215"                 // 0x000000 .. 0xFFFFFF
-  "~tempf|fix2||-40.00|200.00");
+  "~rgb|int|rw|0|0|16777215"              // 0x000000 .. 0xFFFFFF
+  "~tempf|fix2|r||-40.00|200.00");
 
 Upline upline(Serial, itsyBitsySchema);
 

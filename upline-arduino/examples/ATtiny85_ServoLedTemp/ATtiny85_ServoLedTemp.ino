@@ -158,9 +158,9 @@ UPLINE_SCHEMA(tinySchema,
   "~name|ATtiny85 node"
   "~desc|Servo, LED, die temperature"
   "~ver|1"
-  "~servo|int|80|0|160"
-  "~led|bool|0"
-  "~tempf|fix2||-40.00|200.00");
+  "~servo|int|rw|80|0|160"
+  "~led|bool|rw|0"
+  "~tempf|fix2|r||-40.00|200.00");
 
 Upline upline(Serial, tinySchema);
 

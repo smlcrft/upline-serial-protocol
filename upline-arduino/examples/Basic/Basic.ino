@@ -41,8 +41,9 @@ UPLINE_SCHEMA(basicSchema,
   "~name|Basic demo"
   "~desc|Counter and LED"
   "~ver|1"
-  "~count|int"                            // no min/max: it only ever counts up
-  "~led|bool|0");
+  "~count|int|r"                          // read-only; no min/max, it only counts up
+  "~led|bool|rw|0"                        // settable, defaults off
+  "~reset|cmd");                          // an action: zero the counter
 
 Upline upline(Serial, basicSchema);
 
@@ -52,7 +53,8 @@ static const uint16_t REPORT_INTERVAL_MS = 1000;   // inside the 2.5 s heartbeat
 static bool     ledIsOn = false;
 static int32_t  counter = 0;
 static uint32_t lastReportMillis = 0;
-static bool     ackIsPending = false;   // a command landed and owes a reply
+static bool     ackIsPending = false;   // a write landed and owes a reply
+static bool     resetIsPending = false; // the "reset" command landed
 
 // ── Upline ───────────────────────────────────────────────────────────────────
 
@@ -61,7 +63,13 @@ static bool     ackIsPending = false;   // a command landed and owes a reply
  * Unknown keys are ignored, which is what keeps a device forward-compatible.
  */
 void uplineOnKeyValPair(const char* key, const char* value, bool isFlag) {
-  if (isFlag) return;                     // no flags defined here
+  if (isFlag) {                           // a cmd carries no value (spec §8.3)
+    if (!strcmp(key, "reset")) {
+      counter = 0;
+      resetIsPending = true;              // replied to from loop(), not here
+    }
+    return;
+  }
   if (!strcmp(key, "led")) {
     ledIsOn = (value[0] == '1');
     digitalWrite(LED_BUILTIN, ledIsOn ? HIGH : LOW);
@@ -89,6 +97,15 @@ void loop() {
     ackIsPending = false;
     upline.beginRecord();
     upline.addBool("led", ledIsOn);
+    upline.endRecord();
+  }
+
+  // A command has no value of its own to echo, so confirm it with the key it
+  // affected (spec §7.1) — here, the counter it just zeroed.
+  if (resetIsPending) {
+    resetIsPending = false;
+    upline.beginRecord();
+    upline.addInt("count", counter);
     upline.endRecord();
   }
 

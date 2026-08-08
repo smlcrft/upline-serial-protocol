@@ -27,8 +27,8 @@ Header-only. No dependencies, no allocation, no libc, no floating point.
 
 UPLINE_SCHEMA(mySchema,
   "uuid|bench-1~name|Thermostat~desc|Bench rig~ver|1"
-  "~temp|fix2||-40.00|125.00"
-  "~fan|bool|0");
+  "~temp|fix2|r||-40.00|125.00"
+  "~fan|bool|rw|0");
 
 Upline upline(Serial, mySchema);
 
@@ -50,13 +50,13 @@ void loop() {
 ```
 
 A host opens the port, waits for a heartbeat, sends `^?^`, and gets back every key with its
-type, default, and range — enough to build a whole interface for a board it has never seen.
+type, access, default, and range — enough to build a whole interface for a board it has never seen.
 
 ## Examples
 
 | Example | Board | Shows |
 |---|---|---|
-| `Basic` | any, including Uno | Counter out, LED in. The smallest useful device — start here. |
+| `Basic` | any, including Uno | Counter out, LED in, and a `reset` command. The smallest useful device — start here. |
 | `ATtiny85_ServoLedTemp` | ATtiny85 @ 16 MHz PLL | Rate-limited servo that releases when parked, plus an LED in and uncalibrated die temperature out. 8 KB flash, 512 B RAM, no hardware UART — and it still self-describes. Also worked examples of the things that bite on a part this small: fuses, oscillator trim for a bit-banged UART at 115200, and brown-out choices under a servo load. |
 | `ItsyBitsyM4_RgbAndTemp` | Adafruit ItsyBitsy M4 | Onboard RGB DotStar as a writable 24-bit `int`, SAMD51 die temperature as a read-only `fix2` interpolated from the factory calibration row. |
 

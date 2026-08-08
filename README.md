@@ -39,6 +39,7 @@ Upline gives any serial-capable device a predictable way to publish state, accep
 - [6. Pairs, keys, values](#6-pairs-keys-values)
   - [6.1 Only the first `|` is significant](#61-only-the-first--is-significant)
 - [7. Commands](#7-commands)
+  - [7.1 Writes and confirmation](#71-writes-and-confirmation)
 - [8. The descriptor](#8-the-descriptor)
   - [8.1 Device identity (`uuid`)](#81-device-identity-uuid)
   - [8.2 Descriptor values](#82-descriptor-values)
@@ -83,7 +84,7 @@ Upline gives any serial-capable device a predictable way to publish state, accep
 - **Five reserved characters.** `^ ~ | \` and the line terminator. Spaces, quotes, colons, commas, and brackets are all legal raw, so records stay readable in any terminal.
 - **Complete escaping, including newline** — six sequences, no forbidden-character lists.
 - **Binary via base64url**, unpadded, in a `b64` value.
-- **Self-describing.** Every device answers `^?^` with its full schema: keys, types, defaults, and ranges — or broadcasts it unprompted if it has no receive path (§9.1).
+- **Self-describing.** Every device answers `^?^` with its full schema: keys, types, access, defaults, ranges, and any commands it accepts — or broadcasts it unprompted if it has no receive path (§9.1).
 - **Liveness built in.** A heartbeat tells a host the device is alive and speaks Upline before anything is sent to it.
 - **No floating point, anywhere.** Decimals are `fixN` — a decimal string on the wire, a scaled integer in the device.
 - **Transport-agnostic.** Anything that carries an ordered stream of bytes (§2).
@@ -251,6 +252,16 @@ A flag in first position names a command. Two are mandatory; everything else is 
 
 A device that can receive MUST answer `^?^` with a single `!` record. A **transmit-only** device cannot, and instead broadcasts its descriptor unprompted — see §9.1. A device receiving an unrecognized command MUST NOT act on it, and MAY report an error (§10).
 
+### 7.1 Writes and confirmation
+
+A device that accepts a write SHOULD immediately emit a record carrying the affected key and **the value it actually holds** after applying it — not on the next telemetry tick. Clamping to the declared `min`/`max` (§8.2) is normal and expected; the echo is what tells a host that the value it sent is not the value in effect. A device MAY coalesce echoes under a rapid series of writes.
+
+A host SHOULD treat a value it has sent as **pending, not current**, until that key arrives from the device. A host MUST NOT write back a value it received — that is a feedback loop, not a change.
+
+A host SHOULD NOT retransmit a command or a write that has not been echoed. There is no correlation (§14.4) and no idempotency guarantee: a retried `^beep^` beeps twice, and a retried `^step|1^` may step twice.
+
+A write-only key (access `w`, §8.2) and a `cmd` have nothing to echo and are fire-and-forget. Devices SHOULD give commands an observable effect on a declared key where practical.
+
 ---
 
 ## 8. The descriptor
@@ -258,7 +269,7 @@ A device that can receive MUST answer `^?^` with a single `!` record. A **transm
 `!` carries identity and full schema, in **one record**. There is no chunking, no continuation flag, and no per-key query. For most devices it is a compile-time constant — on AVR, in `PROGMEM`.
 
 ```text
-^!~uuid|4f2a9c~name|Greenhouse~desc|North bed sensors~ver|1~temp|fix2||-40.00|125.00~rh|int||0|100~fan|bool|0^
+^!~uuid|4f2a9c~name|Greenhouse~desc|North bed sensors~ver|1~temp|fix2|r||-40.00|125.00~rh|int|r||0|100~fan|bool|rw|0~beep|cmd^
 ```
 
 Four keys are **mandatory**:
@@ -304,10 +315,31 @@ One record is a simplification, not a size budget: a host never deals with reass
 ### 8.2 Descriptor values
 
 ```abnf
-descriptor-value = type [ "|" default [ "|" min "|" max ] ]
+descriptor-value = type *( "|" subfield )
 ```
 
-Up to four positional sub-fields; empty means absent. `temp|fix2||0|100` is a two-decimal fixed-point value with no default and a range of 0–100.
+Positional; an empty sub-field means absent, and trailing empty sub-fields may be elided.
+
+| # | Sub-field | Meaning |
+|---|---|---|
+| 1 | `type` | §8.3 |
+| 2 | `access` | `r`, `rw`, or `w`, as in `fopen` modes. Absent or unrecognized means `r`. |
+| 3 | `default` | Initial or presumed value |
+| 4 | `min` | Lower bound — independently optional |
+| 5 | `max` | Upper bound — independently optional |
+
+```text
+temp|fix2|r||-40.00|125.00      a sensor with a range
+fan|bool|rw|0                   settable, default off
+lcd|str|w                       write-only; nothing to read back
+n|int|rw||10                    a floor with no ceiling
+tags|strs|r                     an array type still carries access
+beep|cmd                        an action, not a value
+```
+
+**Access is the read/write contract.** `r` is read-only, `rw` settable, and `w` write-only — a value a host may set but can never observe, and therefore one that can never be echoed (§7.1). A host SHOULD NOT send to an `r` key. Read-only is the default, so a sensor declares nothing.
+
+**A `cmd` takes no sub-fields** — `beep|cmd`. Sub-field 2 MUST be empty if present: a command is invoked, not read or written.
 
 ### 8.3 Types
 
@@ -324,9 +356,10 @@ The set is **closed**; extend with the `x-` prefix (§15). A receiver meeting an
 | `ints` | Sub-fields, each an `int` |
 | `fix1s`…`fix9s` | Sub-fields, each a `fixN` at the same scale |
 | `b64json` | **OPTIONAL.** base64url of UTF-8 JSON text |
+| `cmd` | **No value.** The key names an action, which a host invokes as a first-position flag (§7). A `cmd` takes no sub-fields. |
 | `x-*` | Vendor extension |
 
-For array types, `default`, `min`, and `max` MUST be empty — their bars are indistinguishable from element separators.
+For array types, `default`, `min`, and `max` MUST be empty — their bars are indistinguishable from element separators. `access` is unaffected.
 
 **`b64` is unpadded, normatively.** RFC 4648 §3.2 requires padding *"unless the specification referring to this document explicitly states otherwise"* — this specification so states, following RFC 8949 §6.1 (CBOR→JSON) and RFC 7515 (JOSE/JWT). The alphabet `A-Za-z0-9-_` collides with no reserved character, so `b64` values never need escaping, and dropping padding removes `=` from the wire.
 
@@ -337,7 +370,7 @@ For array types, `default`, `min`, and `max` MUST be empty — their bars are in
 **`fixN` is the only decimal type. There is no floating-point type.** No conforming implementation, on any part however capable, needs a float parser or formatter to speak Upline. A host preferring doubles converts after parsing; that never reaches the wire.
 
 ```text
-temp|fix2||-40.00|125.00        declared in the descriptor
+temp|fix2|r||-40.00|125.00      declared in the descriptor
 ^temp|23.45^                    on the wire
 2345                            in the device, as int32_t
 ```
@@ -728,7 +761,9 @@ A generic host can map types to controls directly:
 | `strs` / `ints` / `fixNs` | List or multi-series plot | |
 | `b64` | Binary blob — download, hex view, or decode by convention | |
 | `x-*` | Falls back to a text field | Unknown types are `str` (§8.3) |
-| Command (flag) | Button | Arguments become a small form |
+| `cmd` | Button | Takes no arguments; fire-and-forget (§7.1) |
+
+**Access selects the control's mode, not its kind.** An `r` key renders as a readout or a plot, `rw` as the interactive control above, and `w` as one that shows no current value. Neither `w` nor `cmd` can be confirmed (§7.1), so a host renders them without a pending state.
 
 `min` and `max` are also the validation contract: a host SHOULD refuse to send an out-of-range value rather than rely on the device to reject it, since §10 makes error reporting optional.
 
@@ -756,7 +791,7 @@ Upline specifies framing, escaping, discovery, and liveness. **Everything above 
 
 **Keys.** Any key not beginning with `_` is yours. Declare it in the descriptor with a type, a default, and a range; nothing else is reserved.
 
-**Commands.** Any first-position flag other than `?` and `!` is an application command, optionally with argument pairs: `^reboot~delay|500^`, `^calibrate^`, `^zero~axis|2^`. Unknown commands MUST be ignored rather than guessed at, so adding one is backward-compatible with older hosts.
+**Commands.** Any first-position flag other than `?` and `!` is an application command, optionally with argument pairs: `^reboot~delay|500^`, `^calibrate^`, `^zero~axis|2^`. Declare a zero-argument command with the `cmd` type (§8.3); one taking arguments remains legal but is not yet declarable (§17). Unknown commands MUST be ignored rather than guessed at, so adding one is backward-compatible with older hosts.
 
 **Types.** The `x-` prefix carries vendor types, and a receiver that does not know one treats it as `str` — so an extension degrades to readable text rather than a parse failure.
 
@@ -844,25 +879,37 @@ Verified behavior worth noting: **26 dispatches nothing**, because a pair is emi
 ### 16.3 Descriptor and fixed point
 
 ```text
-43  ^!~uuid|4f2a~name|Greenhouse~desc|North bed~ver|1~temp|fix2||0|100^
-      → temp: type=fix2, default=(none), min=0, max=100
-44  ^!~uuid|x~name|y~desc|z~ver|1~fan|bool|0^
-      → fan: type=bool, default=0
+43  ^!~uuid|4f2a~name|Greenhouse~desc|North bed~ver|1~temp|fix2|r||0|100^
+      → temp: type=fix2, access=r, default=(none), min=0, max=100
+44  ^!~uuid|x~name|y~desc|z~ver|1~fan|bool|rw|0^
+      → fan: type=bool, access=rw, default=0
 45  ^!~uuid|x~name|y~desc|z~ver|1~tags|strs^
       → tags: type=strs, no default/min/max
 46  ^!~uuid|x~name|y~desc|z~ver|1~q|x-custom^
       → q: unknown type → treat as str
-47  ^!~uuid|x~name|y~desc|z~ver|1~note|str|a\|b^
-      → note: type=str, default=a|b   (sub-fields split on UNESCAPED bars only, §6.1)
+47  ^!~uuid|x~name|y~desc|z~ver|1~note|str|r|a\|b^
+      → note: type=str, access=r, default=a|b   (sub-fields split on UNESCAPED bars only, §6.1)
 48  ^!~uuid|x~name|y~desc|z~ver|1^
       → mandatory keys only; a device with no data keys is valid
 49  ^!~name|x~desc|y~ver|1^
       → incomplete descriptor: uuid missing (§8)
-50  ^!~uuid|x~name|y~desc|z~ver|1~temp|fix2||-40.00|125.00^
-      → temp: type=fix2, scale=2, min=-40.00, max=125.00
+50  ^!~uuid|x~name|y~desc|z~ver|1~temp|fix2|r||-40.00|125.00^
+      → temp: type=fix2, scale=2, access=r, min=-40.00, max=125.00
 51  ^temp|23.45^                          → 2345 at fix2
 52  ^temp|23^                             → 2300 at fix2; missing fraction MUST be accepted
 53  ^temp|23.456^                         → 2346 at fix2; excess digits round half up
+```
+
+Access, commands, and independent bounds (§8.2):
+
+```text
+62  ^!~uuid|x~name|y~desc|z~ver|1~t|int^        → t: access=r; absent means read-only
+63  ^!~uuid|x~name|y~desc|z~ver|1~lcd|str|w^    → lcd: access=w, write-only
+64  ^!~uuid|x~name|y~desc|z~ver|1~n|int|rw||10^ → n: access=rw, min=10, max absent
+65  ^!~uuid|x~name|y~desc|z~ver|1~tags|strs|r^  → tags: access=r, no default/min/max
+66  ^!~uuid|x~name|y~desc|z~ver|1~beep|cmd^     → beep: a command; no sub-fields
+67  ^!~uuid|x~name|y~desc|z~ver|1~beep|cmd|w^   → REJECT   a cmd takes no sub-fields
+68  ^!~uuid|x~name|y~desc|z~ver|1~x|int|zz^     → x: unrecognized access → r
 ```
 
 ### 16.4 Line endings
@@ -886,10 +933,9 @@ Vector 61 is not an error — the record is simply unfinished, and a byte-orient
 
 ## 17. Open questions
 
-1. **Read/write direction is not declared.** The descriptor says a key's type and range but not whether a host may write it — so a generic UI cannot distinguish a sensor reading from a setpoint without out-of-band knowledge. The pragmatic convention is that a key carrying a `default` is settable and one without is read-only, but that is convention, not specification. Candidate fixes: a fifth positional sub-field, an access marker on the type, or a separate reserved key. This is the most likely v1 addition.
-2. **Strict vs. lenient invalid escapes** (§5). Currently strict-reject; RFC 5424 chose lenient. Strict suits actuators, lenient suits log-style telemetry.
-3. **Should `ver` travel outside `!`?** A host cannot learn the version without a successful `?`/`!` exchange — fine for v1, but it forecloses grammar changes. A version suffix on the sync byte (`^1…^`) costs one byte per record forever.
-4. **Heartbeat interval discoverability** (§9). 2500 ms is fixed. A battery-powered or shared-bus device may want longer; a `_hb` key in `!` is cheap, but whether receivers would honor it is the question.
+1. **Strict vs. lenient invalid escapes** (§5). Currently strict-reject; RFC 5424 chose lenient. Strict suits actuators, lenient suits log-style telemetry.
+2. **Should `ver` travel outside `!`?** A host cannot learn the version without a successful `?`/`!` exchange — fine for v1, but it forecloses grammar changes. A version suffix on the sync byte (`^1…^`) costs one byte per record forever.
+3. **Command arguments are not declarable.** A `cmd` takes no sub-fields (§8.2), so a host can render a button but not a form. The intended shape is settled: arguments ride as value sub-fields — `^beep|440.0|0.75^` — which is already legal under §6.1 and reaches a device as **one** dispatch, rather than a command flag followed by argument pairs the handler has not yet seen (§12.3). Deferred are the descriptor declaration and a prerequisite in the reference implementation: §12.1 unescapes a value before delivering it, and splitting an already-unescaped value on `|` cannot distinguish an argument's escaped bar from a separator.
 
 ---
 

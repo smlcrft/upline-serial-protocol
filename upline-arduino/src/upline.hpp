@@ -20,8 +20,8 @@
 //     "~name|Greenhouse"
 //     "~desc|North bed sensors"
 //     "~ver|1"                            // Upline version, always 1
-//     "~temp|fix2||-40.00|125.00"         // 2-decimal value, range -40..125
-//     "~fan|bool|0");                     // on/off, defaults off
+//     "~temp|fix2|r||-40.00|125.00"       // 2-decimal sensor, range -40..125
+//     "~fan|bool|rw|0");                  // on/off, settable, defaults off
 //
 //   Upline upline(Serial, mySchema);
 //
@@ -204,13 +204,19 @@
  *
  * The four mandatory keys are `uuid`, `name`, `desc`, and `ver` (spec §8).
  *
+ * A data key is `name|type|access|default|min|max`, every sub-field after the
+ * type optional. Access is `r` (the default, so a sensor declares nothing),
+ * `rw`, or `w`; `min` and `max` are independent (spec §8.2). A `cmd` key names
+ * an action the host invokes as `^key^` and takes no sub-fields.
+ *
  *   UPLINE_SCHEMA(mySchema,
  *     "uuid|n4o8IUt-TQWzph4vfI2Qqw"
  *     "~name|Greenhouse"
  *     "~desc|North bed sensors"
  *     "~ver|1"
- *     "~temp|fix2||-40.00|125.00"
- *     "~fan|bool|0");
+ *     "~temp|fix2|r||-40.00|125.00"
+ *     "~fan|bool|rw|0"
+ *     "~beep|cmd");
  *
  * @param name      identifier to declare, later passed to the Upline constructor
  * @param ...       the descriptor body, as one or more string literals
