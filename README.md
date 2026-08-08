@@ -18,7 +18,7 @@ Upline gives any serial-capable device a predictable way to publish state, accep
 > #include <upline.hpp>
 > ```
 >
-> - **Small.** A complete device — codec, `fixN`, base64url, descriptor, heartbeat, telemetry, 128-byte receive buffer — is **3,900 B of flash and 364 B of SRAM** on an Uno, and fits an **ATtiny85** with 8 KB flash and 512 B of RAM. The decode core alone is 436 B.
+> - **Small.** A complete device — codec, `fixN`, base64url, descriptor, heartbeat, telemetry, 128-byte receive buffer — is **3,918 B of flash and 364 B of SRAM** on an Uno, and fits an **ATtiny85** with 8 KB flash and 512 B of RAM. The decode core alone is 464 B.
 > - **Optimized.** Header-only. No allocation, no libc, no floating point, no `String`. Anything you never call is never linked, so unused features cost nothing.
 > - **Tested.** Compiled clean on AVR (ATmega8/168/328P, ATtiny85, ATtiny1614), SAMD21/SAMD51, RP2040, RP2350 (ARM and RISC-V), ESP32 / S3 / C3, and Teensy 4.1. All 61 conformance vectors in §16 pass.
 > - **Not Arduino-only.** Supply any port with `available()`, `read()`, and `write(uint8_t)`, then define `UPLINE_MILLIS()`.
@@ -94,13 +94,13 @@ Upline gives any serial-capable device a predictable way to publish state, accep
 
 | Board | Chip | Flash | of | SRAM | of |
 |---|---|---|---|---|---|
-| Uno / Duemilanove-328 | ATmega328P | 3,900 B | 12% of 32,256 | 364 B | 17% of 2,048 |
-| **Duemilanove (2008)** | ATmega168 | **3,900 B** | **27% of 14,336** | 364 B | 35% of 1,024 |
-| Arduino NG (2005) | ATmega8 | 3,684 B | 51% of 7,168 | 364 B | 35% of 1,024 |
-| ATtiny85 | ATtiny85 | 3,262 B | 39% of 8,192 | 259 B | 50% of 512 |
+| Uno / Duemilanove-328 | ATmega328P | 3,918 B | 12% of 32,256 | 364 B | 17% of 2,048 |
+| **Duemilanove (2008)** | ATmega168 | **3,918 B** | **27% of 14,336** | 364 B | 35% of 1,024 |
+| Arduino NG (2005) | ATmega8 | 3,702 B | 51% of 7,168 | 364 B | 35% of 1,024 |
+| ATtiny85 | ATtiny85 | 3,278 B | 40% of 8,192 | 259 B | 50% of 512 |
 | ATtiny85 (Tx only) | ATtiny85 | 2,644 B | 32% of 8,192 | 126 B | 24% of 512 |
 
-The last row is the transmit-only profile (§9.1) at the same workload: no receive path, so the parser and receive buffer are gone and the device broadcasts its descriptor instead of answering `?`. Trimming further to integers and booleans only puts a receive-capable ATtiny85 at **2,694 B and 241 B**. The decode core alone is **436 B** and needs no libc, no allocator, and no floating point (§13).
+The last row is the transmit-only profile (§9.1) at the same workload: no receive path, so the parser and receive buffer are gone and the device broadcasts its descriptor instead of answering `?`. Trimming further to integers and booleans only puts a receive-capable ATtiny85 at **2,710 B and 241 B**. The decode core alone is **464 B** and needs no libc, no allocator, and no floating point (§13).
 
 ---
 
@@ -167,6 +167,12 @@ escape   = "\" ( "\" / "^" / "|" / "~" / "n" / "r" )
 
 Legal raw in keys and values: space, `"`, `'`, `:`, `,`, `;`, `=`, `/`, `#`, `$`, `%`, `&`, `*`, `+`, `<`, `>`, `?`, `@`, `[`, `]`, `{`, `}`, `` ` ``.
 
+**Why `^`, `~`, and `|`.** They are the three least-used printable ASCII characters in the text this protocol actually carries — key names, sensor labels, units, identifiers, and human-readable strings. That is the entire basis for the choice. A delimiter's real cost is not its own byte, it is the escaping it forces on everything else, so the reserved set was chosen to make escaping **rare** rather than to look tidy.
+
+That is what buys the long "legal raw" list above. A timestamp keeps its colons, a list keeps its commas, a path keeps its slashes, quoted text keeps its quotes, and anything JSON-shaped keeps its braces and brackets — none of it needs an escape, and none of it becomes unreadable in a terminal. The formats that reserved those common characters instead are the ones whose users hit the wall: see Appendix B on a colon in a metric name, and on the formats that resorted to telling users which characters to avoid.
+
+The escape introducer `\` is the one exception to the rarity rule — it is common in Windows paths and regular expressions (vector 11 is `^p|C:\\tmp^`). It is reserved anyway because it is the conventional escape across every format surveyed, and picking a rarer byte would trade that familiarity for a saving visible only in values that carry paths.
+
 ---
 
 ## 4. Framing
@@ -225,7 +231,7 @@ A pair with no unescaped `|` is a **flag** — a key with no value.
 
 `key` (flag) and `key|` (empty-string value) are distinct; a decoder MUST expose the difference.
 
-Keys are case-sensitive and MUST be non-empty after unescaping; for interoperability draw them from `[a-z0-9_]`. **Keys beginning with `_` are reserved** by this specification, and exactly one is defined: `_e` (§10). A receiver encountering any other `_`-prefixed key MUST reject the record — that is what keeps the namespace usable by future versions. If a key repeats in a record, **the last occurrence wins**; encoders SHOULD NOT emit duplicates.
+Keys are case-sensitive and MUST be non-empty after unescaping; for interoperability draw them from `[a-z0-9_]`. **Keys beginning with `_` are reserved** by this specification, and exactly one is defined: `_e` (§10); applications MUST NOT use them. A receiver **MUST ignore** any other `_`-prefixed key — it MUST NOT dispatch it as data and MUST NOT treat it as an error, and the rest of the record is processed normally. That is what lets a future version add a protocol-level field without breaking a receiver that shipped before it. The exception is **first position**, which is the record's command (§7): an unknown `_` key there is an unrecognized command and the record MUST be discarded, since ignoring it would promote the next pair into command position. If a key repeats in a record, **the last occurrence wins**; encoders SHOULD NOT emit duplicates.
 
 ### 6.1 Only the first `|` is significant
 
@@ -363,7 +369,11 @@ For array types, `default`, `min`, and `max` MUST be empty — their bars are in
 
 **`b64` is unpadded, normatively.** RFC 4648 §3.2 requires padding *"unless the specification referring to this document explicitly states otherwise"* — this specification so states, following RFC 8949 §6.1 (CBOR→JSON) and RFC 7515 (JOSE/JWT). The alphabet `A-Za-z0-9-_` collides with no reserved character, so `b64` values never need escaping, and dropping padding removes `=` from the wire.
 
-**`b64json` is optional and discouraged** — it reintroduces the multi-kilobyte parser this protocol exists to avoid. The name is load-bearing: JSON travels only as base64url, never as raw text, because raw JSON's own `\` escapes would each need doubling. A device MUST NOT be considered non-compliant for rejecting it.
+**`b64json` is optional, and discouraged on small parts** — it reintroduces the multi-kilobyte parser this protocol exists to avoid, and an ATmega168 cannot afford one.
+
+It is in the set anyway because that constraint is not universal. On a part with hundreds of kilobytes a JSON parser is a rounding error (Appendix A), and `b64json` becomes the natural fallback for a payload no scalar type can express — a nested configuration, a table, a captured buffer with its metadata attached. Declaring it says precisely that, where a bare `b64` would leave a host holding opaque bytes with no idea what to do with them. The floor stays where it is: nothing here obliges a small device to grow, and a capable one is not forced to invent a vendor type to say something the protocol can already say.
+
+The name is load-bearing: JSON travels only as base64url, never as raw text, because raw JSON's own `\` escapes would each need doubling. A device MUST NOT be considered non-compliant for rejecting it.
 
 ### 8.4 `fixN` — decimals without floating point
 
@@ -575,11 +585,11 @@ static void up_unescape(char *s) {
     *w = '\0';
 }
 
-/* §6 non-empty, and the only defined _-prefixed key is _e. */
-static int up_key_ok(const char *k) {
-    if (!*k) return 0;
-    if (*k != '_') return 1;
-    return k[1] == 'e' && k[2] == '\0';
+/* §6 a reserved key this decoder does not define. `_e` is the only one it does.
+   A key cannot acquire a leading `_` through unescaping — `\_` is an invalid
+   escape and the scan rejects it first — so checking before unescaping is safe. */
+static int up_key_unknown_reserved(const char *k) {
+    return *k == '_' && !(k[1] == 'e' && k[2] == '\0');
 }
 
 /* `line` is one record with its terminator already removed (§12.4).
@@ -591,6 +601,7 @@ int up_parse(char *line, size_t len,
     if (len < 1 || *p++ != '^') return UP_NOT_UPLINE;        /* §4 not ours: ignore */
 
     char *k = p, *v = NULL;
+    unsigned npairs = 0;                                     /* §6 first-position test */
     for (; p < end; p++) {
         if (*p == '\\') {                                    /* §5 */
             if (p + 1 >= end) return UP_BAD_ESCAPE;          /* dangling */
@@ -607,10 +618,17 @@ int up_parse(char *line, size_t len,
             char term = *p;
             *p = '\0';
             if (*k || v) {                                   /* §6 skip empty segments */
-                if (!up_key_ok(k)) return UP_BAD_KEY;
-                up_unescape(k);
-                if (v) up_unescape(v);
-                on_pair(k, v ? v : "", v == NULL);
+                if (!*k) return UP_BAD_KEY;                  /* §6 empty key */
+                if (up_key_unknown_reserved(k)) {
+                    /* §6 ignore it — but not in first position, where dropping
+                       it would promote the next pair into command position. */
+                    if (npairs == 0) return UP_BAD_KEY;
+                } else {
+                    up_unescape(k);
+                    if (v) up_unescape(v);
+                    on_pair(k, v ? v : "", v == NULL);
+                    npairs++;
+                }
             }
             if (term == '^')                                 /* §4 must be final byte */
                 return (p + 1 == end) ? UP_OK : UP_TRAILING;
@@ -719,7 +737,7 @@ avr-gcc 7.3.0, ATmega328P, `-Os -ffunction-sections -fdata-sections -Wl,--gc-sec
 
 | Component | Flash |
 |---|---|
-| **`up_parse` + `up_unescape` + `up_key_ok`** | **436 B** |
+| **`up_parse` + `up_unescape` + key checks** | **464 B** |
 | `up_feed` line reader (§12.4) | 98 B |
 | `up_fix_parse` + `up_fix_str` | 680 B |
 | base64url decode, computed alphabet | 250 B |
@@ -800,7 +818,7 @@ Upline specifies framing, escaping, discovery, and liveness. **Everything above 
 Two properties make extension safe rather than merely possible:
 
 - **`ver`** lets a host detect a device speaking a newer grammar before it misparses one.
-- **The `_` namespace is reserved and enforced** — receivers reject unknown `_` keys — so future versions can add protocol-level fields without colliding with any application that shipped first.
+- **The `_` namespace is reserved and ignored** — receivers skip unknown `_` keys rather than failing on them (§6) — so future versions can add protocol-level fields without colliding with any application that shipped first, *and* without breaking any receiver that shipped first. A protocol-level field SHOULD be declared in the `!` descriptor before it appears in ordinary records: a host meeting an unknown `_` key in a descriptor knows the device speaks something it does not, and can surface that rather than assume it understands the whole schema.
 
 **Coexistence.** Because lines not starting with `^` are ignored (§4), a device may emit Upline *and* another format on the same link — plain `printf` debugging, or `Label:Value` lines for a plotter — and each consumer sees only what it understands.
 
@@ -860,7 +878,7 @@ Contrast #8 with #14, and #11 with #32 — those pairs are why this is not a tab
 33  ^~~^                                  → ∅                       empty segments ignored, §6
 34  ^~a|1~^                               → a=1                     leading/trailing ~ ignored
 35  ^|1^                                  → REJECT                  empty key
-36  ^a|1~_z|2^                            → REJECT                  undefined _-prefixed key
+36  ^a|1~_z|2^                            → a=1                     unknown _ key is ignored, §6
 37  <over-long record>                    → REJECT                  host→device, past the device
                                                                      buffer (§11); the remainder up
                                                                      to the next terminator is
@@ -872,7 +890,18 @@ Contrast #8 with #14, and #11 with #32 — those pairs are why this is not a tab
 42  ^a|1^\x20                             → REJECT                  one trailing space; no padding
 ```
 
-The §12 decoder covers 1–36 and 38–42. Three cases sit above it: **37** is the line reader's (the decoder receives a complete line); **21** dispatches both pairs, leaving last-wins to the caller; **5 and 6** rely on position, and `is_flag` carries no position, so command-vs-flag is a caller-level determination.
+The reserved namespace (§6):
+
+```text
+69  ^_z~a|1^                              → REJECT                  unknown _ key in first
+                                                                     position is an unrecognized
+                                                                     command; ignoring it would
+                                                                     promote a|1 into its place
+70  ^a|1~_z|2~b|3^                        → a=1, b=3                ignored mid-record, the rest
+                                                                     of the record still applies
+```
+
+The §12 decoder covers 1–36, 38–42, and 69–70. Three cases sit above it: **37** is the line reader's (the decoder receives a complete line); **21** dispatches both pairs, leaving last-wins to the caller; **5 and 6** rely on position, and `is_flag` carries no position, so command-vs-flag is a caller-level determination.
 
 Verified behavior worth noting: **26 dispatches nothing**, because a pair is emitted only once its terminator is seen (§12.3).
 

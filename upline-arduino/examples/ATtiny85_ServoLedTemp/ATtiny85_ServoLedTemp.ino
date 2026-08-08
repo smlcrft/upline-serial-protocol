@@ -209,6 +209,7 @@ static const uint8_t SERVO_BOOT_DEGREES = 80;   // the midpoint of 0..160
 static uint8_t  servoTargetDegrees = SERVO_BOOT_DEGREES;
 static int16_t  servoPositionFx2   = (int16_t)SERVO_BOOT_DEGREES * 100;
 static bool     servoHasArrived = false;        // position reached target
+static bool     servoIsDriven   = true;        // position reached target
 static uint32_t servoArrivedAtMillis = 0;       // and when that happened
 static bool     ledIsOn = false;
 static uint32_t lastServoPulseMillis = 0;
@@ -256,8 +257,12 @@ static void servoAdvanceAndPulse(uint32_t now) {
       servoHasArrived = true;
       servoArrivedAtMillis = now;
     }
-    if (now - servoArrivedAtMillis >= SERVO_HOLD_MS) return;
+    if (now - servoArrivedAtMillis >= SERVO_HOLD_MS){
+      servoIsDriven = false; // servo no longer being driven.
+      return;
+    }
   } else {
+    servoIsDriven = true;
     servoHasArrived = false;
   }
   // Map 0.00-160.00° onto SERVO_PULSE_MIN_US..SERVO_PULSE_MAX_US. The multiply
@@ -384,7 +389,9 @@ void loop() {
     // setting reflected back. The eased position on the way there stays
     // internal — see the note in the header.
     upline.beginRecord();
-    upline.addFixed("tempf", readDieTemperatureFx2(), 2);
+    if(!servoIsDriven){ // don't measure while servo is being driven. Adds lots of analog noise.
+      upline.addFixed("tempf", readDieTemperatureFx2(), 2);
+    }
     upline.addInt("servo", servoTargetDegrees);
     upline.addBool("led", ledIsOn);
     upline.endRecord();

@@ -63,8 +63,8 @@ type, access, default, and range — enough to build a whole interface for a boa
 All three echo a command back immediately with just the key it touched, so a host never waits on
 the next telemetry tick to see its setting take effect.
 
-Built sizes: `Basic` 3,806 B (11%) on an Uno · `ATtiny85_ServoLedTemp` 4,122 B / 262 B
-(50% / 51%) · `ItsyBitsyM4_RgbAndTemp` 13,296 B (2%) on the M4.
+Built sizes: `Basic` 3,824 B (11%) on an Uno · `ATtiny85_ServoLedTemp` 4,154 B / 262 B
+(50% / 51%) · `ItsyBitsyM4_RgbAndTemp` 13,328 B (2%) on the M4.
 
 ## Size
 
@@ -73,10 +73,10 @@ receive buffer:
 
 | Board | Flash | SRAM |
 |---|---|---|
-| Uno / ATmega328P | 3,900 B (12%) | 364 B (17%) |
-| Duemilanove / ATmega168 | 3,900 B (27%) | 364 B (35%) |
-| Arduino NG / ATmega8 | 3,684 B (51%) | 364 B (35%) |
-| ATtiny85 | 3,262 B (39%) | 259 B (50%) |
+| Uno / ATmega328P | 3,918 B (12%) | 364 B (17%) |
+| Duemilanove / ATmega168 | 3,918 B (27%) | 364 B (35%) |
+| Arduino NG / ATmega8 | 3,702 B (51%) | 364 B (35%) |
+| ATtiny85 | 3,278 B (40%) | 259 B (50%) |
 | ATtiny85, transmit-only | 2,644 B (32%) | 126 B (24%) |
 
 Anything you never call is never linked, so you do not have to disable features you are not

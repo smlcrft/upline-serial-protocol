@@ -36,7 +36,7 @@ sendHeartbeat	KEYWORD2
 uplineOnKeyValPair	KEYWORD2
 uplineParseRecord	KEYWORD2
 uplineUnescapeInPlace	KEYWORD2
-uplineIsKeyAllowed	KEYWORD2
+uplineIsKeyUnknownReserved	KEYWORD2
 uplineFormatScaled	KEYWORD2
 uplineParseScaled	KEYWORD2
 uplineDecodeBase64	KEYWORD2

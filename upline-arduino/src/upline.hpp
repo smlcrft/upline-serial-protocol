@@ -62,9 +62,9 @@
 // What the parts actually cost, measured on a complete sketch:
 //
 //                                        Uno            ATtiny85
-//   int + bool only ................. 3258 B / 342 B   2650 B / 237 B
+//   int + bool only ................. 3276 B / 342 B   2666 B / 237 B
 //   + addFixed + addBase64 .......... +478 B           +462 B
-//   UPLINE_TRANSMIT_ONLY 1 .......... -620 B / -133 B  -626 B / -133 B
+//   UPLINE_TRANSMIT_ONLY 1 .......... -638 B / -133 B  -642 B / -133 B
 //   UPLINE_RX_BUFFER_SIZE, per byte ..        / -1 B            / -1 B
 //
 // So the two knobs that genuinely change the build are UPLINE_TRANSMIT_ONLY,
@@ -75,7 +75,7 @@
 // feature, and for toolchains that do not garbage-collect unused sections.
 //
 // A tight ATtiny85 sensor — integers and booleans only, full send and receive —
-// lands at 2694 B of 8192 B flash and 241 B of 512 B RAM.
+// lands at 2710 B of 8192 B flash and 241 B of 512 B RAM.
 //
 // ── PLATFORMS ────────────────────────────────────────────────────────────────
 //
@@ -235,7 +235,7 @@ enum UplineResult {
   UplineBadEscape = -2,    ///< Undefined or dangling backslash escape.
   UplineTruncated = -3,    ///< No closing '^' before end of line.
   UplineTrailing = -4,     ///< Bytes appeared after the closing '^'.
-  UplineBadKey = -5        ///< Empty key, or an undefined '_'-prefixed key.
+  UplineBadKey = -5        ///< Empty key, or an undefined '_' key as the command.
 };
 
 /** Callback for each key/value pair, as used by the UplineDevice class. */
@@ -279,14 +279,15 @@ inline void uplineUnescapeInPlace(char* text) {
 }
 
 /**
- * True if a key is legal: non-empty, and the only '_'-prefixed key allowed is
- * "_e" (spec §6). The reserved '_' namespace is what lets future versions of
- * the protocol add fields without colliding with application keys.
+ * True for a '_'-prefixed key this library does not define — "_e" is the only
+ * one it does (spec §6). Such a key is ignored rather than dispatched, so a
+ * future version of the protocol can add a field without breaking this parser.
+ *
+ * Checking before unescaping is safe: a key cannot acquire a leading '_' that
+ * way, because "\_" is an undefined escape and the scan rejects it first.
  */
-inline bool uplineIsKeyAllowed(const char* key) {
-  if (!*key) return false;                    // empty key
-  if (*key != '_') return true;               // ordinary application key
-  return key[1] == 'e' && key[2] == '\0';     // "_e" is the only reserved key
+inline bool uplineIsKeyUnknownReserved(const char* key) {
+  return *key == '_' && !(key[1] == 'e' && key[2] == '\0');
 }
 
 /**
@@ -323,6 +324,7 @@ inline UplineResult uplineParseRecord(char* line, size_t length,
 
   char* key = cursor;
   char* value = NULL;
+  unsigned pairCount = 0;                // spec §6 first-position test
 
   for (; cursor < end; ++cursor) {
     // Skip over a valid escape so an escaped delimiter is not mistaken for a
@@ -352,10 +354,17 @@ inline UplineResult uplineParseRecord(char* line, size_t length,
 
       // Empty segments (from "~~" or a leading/trailing "~") are ignored.
       if (*key || value) {
-        if (!uplineIsKeyAllowed(key)) return UplineBadKey;
-        uplineUnescapeInPlace(key);
-        if (value) uplineUnescapeInPlace(value);
-        handler(context, key, value ? value : "", value == NULL);
+        if (!*key) return UplineBadKey;                     // empty key
+        if (uplineIsKeyUnknownReserved(key)) {
+          // Ignored — except in first position, where dropping it would
+          // promote the next pair into command position (spec §6, §7).
+          if (pairCount == 0) return UplineBadKey;
+        } else {
+          uplineUnescapeInPlace(key);
+          if (value) uplineUnescapeInPlace(value);
+          handler(context, key, value ? value : "", value == NULL);
+          ++pairCount;
+        }
       }
 
       // The closing caret must be the line's last byte. Anything after it means
