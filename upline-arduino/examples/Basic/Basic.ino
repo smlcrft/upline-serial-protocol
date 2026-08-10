@@ -8,18 +8,18 @@
 // Open the port at 115200, wait for a heartbeat, send ^?^, and the board
 // answers with a schema describing both. Then:
 //
-//   ^led|1^             LED on
-//   ^led|0^             LED off
+//   ^led~1^             LED on
+//   ^led~0^             LED off
 //
 // A command is echoed back as soon as it lands, carrying just the key it
 // touched, so a host sees its setting take effect without waiting for the next
 // tick:
 //
-//   ^led|1^  ->  ^led|1^
+//   ^led~1^  ->  ^led~1^
 //
 // and once a second the board sends:
 //
-//   ^count|42~led|1^
+//   ^count~42^led~1^
 //
 // Everything a device has to do — announce itself, accept commands, report
 // state on a heartbeat — is in the fifty lines below. Start here; the
@@ -34,16 +34,15 @@
 // host reads it and knows how to draw the device without a line of code that
 // knows anything about this board.
 UPLINE_SCHEMA(basicSchema,
-  // A readable local id, which spec §8.1 allows for one-offs. Every board
+  // A readable local id, which spec §7 allows for one-offs. Every board
   // flashed with this example shares it — give each unit its own before you
   // ship anything, ideally a UUID v4 as unpadded base64url.
-  "uuid|upline-basic-0001"
-  "~name|Basic demo"
-  "~desc|Counter and LED"
-  "~ver|1"
-  "~count|int|r"                          // read-only; no min/max, it only counts up
-  "~led|bool|rw|0"                        // settable, defaults off
-  "~reset|cmd");                          // an action: zero the counter
+  "_i|upline-basic-0001"
+  "~_n|Basic demo"
+  "~_d|Counter and LED"
+  "~count|r|int"                          // read-only; no min/max, it only counts up
+  "~led|rw|bool|0"                        // settable, defaults off
+  "~reset|x");                            // an action: zero the counter
 
 Upline upline(Serial, basicSchema);
 
@@ -59,19 +58,25 @@ static bool     resetIsPending = false; // the "reset" command landed
 // ── Upline ───────────────────────────────────────────────────────────────────
 
 /**
- * Called once for every key/value pair the host sends.
+ * Called once for every entry the host sends.
  * Unknown keys are ignored, which is what keeps a device forward-compatible.
  */
-void uplineOnKeyValPair(const char* key, const char* value, bool isFlag) {
-  if (isFlag) {                           // a cmd carries no value (spec §8.3)
-    if (!strcmp(key, "reset")) {
+void uplineOnEntry(const UplineEntry& entry) {
+  // No values at all is a read — or, for an `x` key, an execute (spec §6).
+  // Which one it is depends on what this device declared, not on the wire.
+  if (entry.isRead()) {
+    if (!strcmp(entry.key, "reset")) {
       counter = 0;
       resetIsPending = true;              // replied to from loop(), not here
+    } else if (!strcmp(entry.key, "led")) {
+      ackIsPending = true;                // report the LED without changing it
+    } else if (!strcmp(entry.key, "count")) {
+      resetIsPending = true;              // report the counter without zeroing it
     }
     return;
   }
-  if (!strcmp(key, "led")) {
-    ledIsOn = (value[0] == '1');
+  if (!strcmp(entry.key, "led")) {
+    ledIsOn = (entry.value(0)[0] == '1');
     digitalWrite(LED_BUILTIN, ledIsOn ? HIGH : LOW);
     ackIsPending = true;                  // replied to from loop(), not here
   }
@@ -81,7 +86,7 @@ void setup() {
   Serial.begin(115200);
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);         // start in the schema's declared state
-  upline.onPair(uplineOnKeyValPair);
+  upline.onEntry(uplineOnEntry);
 }
 
 void loop() {
@@ -101,7 +106,7 @@ void loop() {
   }
 
   // A command has no value of its own to echo, so confirm it with the key it
-  // affected (spec §7.1) — here, the counter it just zeroed.
+  // affected (spec §6.1) — here, the counter it just zeroed.
   if (resetIsPending) {
     resetIsPending = false;
     upline.beginRecord();

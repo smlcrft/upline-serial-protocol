@@ -10,8 +10,9 @@
 Upline	KEYWORD1
 UplineDevice	KEYWORD1
 UplineResult	KEYWORD1
-UplinePairHandler	KEYWORD1
-UplinePairHandlerWithContext	KEYWORD1
+UplineEntry	KEYWORD1
+UplineEntryHandler	KEYWORD1
+UplineEntryHandlerWithContext	KEYWORD1
 
 #######################################
 # Methods and functions (KEYWORD2)
@@ -19,7 +20,7 @@ UplinePairHandlerWithContext	KEYWORD1
 
 poll	KEYWORD2
 feed	KEYWORD2
-onPair	KEYWORD2
+onEntry	KEYWORD2
 beginRecord	KEYWORD2
 endRecord	KEYWORD2
 addText	KEYWORD2
@@ -33,12 +34,13 @@ sendInt	KEYWORD2
 sendError	KEYWORD2
 sendSchema	KEYWORD2
 sendHeartbeat	KEYWORD2
-uplineOnKeyValPair	KEYWORD2
-uplineParseRecord	KEYWORD2
+uplineOnEntry	KEYWORD2
+uplineParseLine	KEYWORD2
 uplineUnescapeInPlace	KEYWORD2
 uplineIsKeyUnknownReserved	KEYWORD2
 uplineFormatScaled	KEYWORD2
-uplineParseScaled	KEYWORD2
+uplineParseNumber	KEYWORD2
+uplineAccumulateDigit	KEYWORD2
 uplineDecodeBase64	KEYWORD2
 
 #######################################

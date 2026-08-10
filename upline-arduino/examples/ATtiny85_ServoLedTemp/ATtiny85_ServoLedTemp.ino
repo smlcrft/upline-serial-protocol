@@ -4,14 +4,14 @@
 //
 // Proof that a self-describing device fits on a part this small. Exposes:
 //
-//   servo  int   0..160          writable   servo angle, degrees, 80 at boot
+//   servo  int   SERVO_DEG_MIN..MAX  writable  servo angle, degrees, inverted: the low end drives the long pulse
 //   led    bool  0/1             writable   an LED
 //   tempf  fix2  -40.00..200.00  readable   uncalibrated die temperature, °F
 //
 // The servo is rate limited and then released, both to be kind to a USB 5 V
 // rail. Commanding a big jump makes a servo draw close to stall current for the
 // whole move, which can brown out the chip and reset it; easing there at a
-// fixed degrees-per-second spreads that draw out, so 0 to 160 at the default
+// fixed degrees-per-second spreads that draw out, so end to end at the default
 // 60 deg/s takes under three seconds instead of one violent lunge. It boots
 // commanding 80, the midpoint, so it never drives to an end stop. Three seconds
 // after it arrives the pulses stop and the servo goes limp — no holding current
@@ -22,22 +22,22 @@
 // Open the port at 115200, wait for a heartbeat, send ^?^, and the chip answers
 // with a schema describing all three. Then:
 //
-//   ^servo|90^          move toward 90 degrees, easing at SERVO_SLEW_PER_SECOND
-//   ^led|1^             LED on
-//   ^servo|0~led|0^     both at once
+//   ^servo~90^          move toward 90 degrees, easing at SERVO_SLEW_PER_SECOND
+//   ^led~1^             LED on
+//   ^servo~0^led~0^     both at once
 //
 // Every command is echoed immediately with just the keys it touched, so a host
 // never waits on the next telemetry tick to see its setting take effect:
 //
-//   ^servo|0~led|0^  ->  ^servo|0~led|0^
-//   ^servo|200^      ->  ^servo|80^        refused, still at 80
+//   ^servo~0^led~0^  ->  ^servo~0^led~0^
+//   ^servo~200^      ->  ^servo~80^        refused, still at 80
 //
 // An out-of-range value is echoed with the setting still in force, which is how
 // a host tells a rejected command from a lost one. Costs about 1 ms of airtime.
 //
 // and every two seconds it sends something like:
 //
-//   ^tempf|72.50~servo|90~led|0^
+//   ^tempf~72.50^servo~90^led~0^
 //
 // ── WIRING ───────────────────────────────────────────────────────────────────
 //
@@ -120,6 +120,20 @@
 static const uint8_t LED_PIN   = 3;   // PB3
 static const uint8_t SERVO_PIN = 4;   // PB4
 
+// ── Commanded range ──────────────────────────────────────────────────────────
+// The angles a host may ask for. Macros rather than `static const` so the
+// schema string below can quote them verbatim: change an end here and the
+// min/max a host draws its slider from changes with it, with no second place to
+// edit and nothing to drift out of sync.
+//
+// Whatever you set becomes the range that maps onto the pulse ends, so widening
+// the degrees does NOT widen the mechanical travel — SERVO_PULSE_MIN_US and
+// SERVO_PULSE_MAX_US still bound that. Changing these only changes the numbers
+// a host uses to address the same physical sweep.
+#define SERVO_DEG_MIN  0
+#define SERVO_DEG_MAX  170
+#define SERVO_DEG_BOOT 90
+
 // ── Oscillator trim ──────────────────────────────────────────────────────────
 // Cancels the +2.80% bit-period error described in the header by running the
 // clock that much slow. OSCCAL trims the 8 MHz RC oscillator, and the datasheet
@@ -150,17 +164,17 @@ static void applyOscillatorTrim() {
 
 // ── Descriptor ───────────────────────────────────────────────────────────────
 // Lives in flash, so its length costs no RAM. min/max is what lets a host draw
-// a 0-160 slider and a toggle without knowing anything about this board.
+// the slider and a toggle without knowing anything about this board. The
+// servo bounds come straight from the SERVO_DEG_* macros above.
 UPLINE_SCHEMA(tinySchema,
-  // A readable local id, which spec §8.1 allows for one-offs. Give each unit
+  // A readable local id, which spec §7 allows for one-offs. Give each unit
   // its own before shipping anything — ideally a UUID v4 as base64url.
-  "uuid|attiny85-demo"
-  "~name|ATtiny85 node"
-  "~desc|Servo, LED, die temperature"
-  "~ver|1"
-  "~servo|int|rw|80|0|160"
-  "~led|bool|rw|0"
-  "~tempf|fix2|r||-40.00|200.00");
+  "_i|attiny85-demo"
+  "~_n|ATtiny85 node"
+  "~_d|Servo, LED, die temperature"
+  "~servo|rw|int|" UPLINE_STRINGIFY(SERVO_DEG_BOOT) "|" UPLINE_STRINGIFY(SERVO_DEG_MIN) "|" UPLINE_STRINGIFY(SERVO_DEG_MAX)
+  "~led|rw|bool|0"
+  "~tempf|r|fix2||-40.00|200.00");
 
 Upline upline(Serial, tinySchema);
 
@@ -192,12 +206,17 @@ static const uint16_t SERVO_SLEW_PER_SECOND = 60;
 //
 // Trim these after OSCILLATOR_TRIM_STEPS, never before — the oscillator trim
 // scales every pulse by the same percentage it scales the clock.
-static const uint16_t SERVO_PULSE_MIN_US = 700;    // command 0
-static const uint16_t SERVO_PULSE_MAX_US = 2300;   // command 160
+// The mapping is INVERTED: the smallest commanded angle drives the LONGEST
+// pulse. Flip these two values to un-invert it.
+static const uint16_t SERVO_PULSE_MIN_US = 520;    // commanded SERVO_DEG_MAX
+static const uint16_t SERVO_PULSE_MAX_US = 2300;   // commanded SERVO_DEG_MIN
 
-// Boot position, matching the schema's declared default so a host that has not
-// yet talked to us still draws the slider where the servo actually is.
-static const uint8_t SERVO_BOOT_DEGREES = 80;   // the midpoint of 0..160
+static_assert(SERVO_DEG_MIN < SERVO_DEG_MAX, "the commanded range must be non-empty");
+static_assert(SERVO_DEG_BOOT >= SERVO_DEG_MIN && SERVO_DEG_BOOT <= SERVO_DEG_MAX, "the boot angle must sit inside the commanded range");
+static_assert((long)(SERVO_DEG_MAX - SERVO_DEG_MIN) * 100 <= 32767, "servoPositionFx2 is int16_t: a span wider than 327 degrees overflows it");
+
+// SERVO_DEG_BOOT is both the boot position and the schema's declared default —
+// one macro, so a host always draws the slider where the servo actually is.
 
 // Position starts AT the target rather than at zero, which matters. Starting at
 // zero would make the very first pulse 700 us and slam the horn into the 0
@@ -206,8 +225,8 @@ static const uint8_t SERVO_BOOT_DEGREES = 80;   // the midpoint of 0..160
 // the first pulse is 1500 us, so the only uncontrolled travel is whatever it
 // takes to get from wherever the horn was left to the middle, which is
 // unavoidable on power-up since an unpowered servo cannot report its position.
-static uint8_t  servoTargetDegrees = SERVO_BOOT_DEGREES;
-static int16_t  servoPositionFx2   = (int16_t)SERVO_BOOT_DEGREES * 100;
+static uint8_t  servoTargetDegrees = SERVO_DEG_BOOT;
+static int16_t  servoPositionFx2   = (int16_t)SERVO_DEG_BOOT * 100;
 static bool     servoHasArrived = false;        // position reached target
 static bool     servoIsDriven   = true;        // position reached target
 static uint32_t servoArrivedAtMillis = 0;       // and when that happened
@@ -216,7 +235,7 @@ static uint32_t lastServoPulseMillis = 0;
 static uint32_t lastReportMillis = 0;
 
 // Which keys a command touched and still owe an acknowledgement. A bitmask
-// rather than a flag per key so that a multi-key record like ^servo|0~led|0^
+// rather than a flag per key so that a multi-key record like ^servo~0^led~0^
 // coalesces into one reply instead of two — one 18-byte record costs less
 // airtime than two records of 12 and 8, and blanks interrupts once.
 static const uint8_t ACK_SERVO = 0x01;
@@ -265,13 +284,18 @@ static void servoAdvanceAndPulse(uint32_t now) {
     servoIsDriven = true;
     servoHasArrived = false;
   }
-  // Map 0.00-160.00° onto SERVO_PULSE_MIN_US..SERVO_PULSE_MAX_US. The multiply
-  // is widened to 32 bits deliberately: 16000 * 1600 is over 25 million and
-  // would wrap a uint16_t four hundred times over. Both endpoints come out
-  // exact, so the pulse can never leave the declared range.
-  const uint16_t pulseMicros = SERVO_PULSE_MIN_US +
-      (uint16_t)(((uint32_t)servoPositionFx2 *
-                  (SERVO_PULSE_MAX_US - SERVO_PULSE_MIN_US)) / 16000u);
+  // Map the commanded range onto the pulse range, INVERTED: SERVO_DEG_MIN
+  // produces SERVO_PULSE_MAX_US and SERVO_DEG_MAX produces SERVO_PULSE_MIN_US.
+  // Subtracting the travel from the long end is what does the inversion, and it
+  // keeps both endpoints exact, so the pulse can never leave the declared range.
+  //
+  // The multiply is widened to 32 bits deliberately: 16000 * 1600 is over 25
+  // million and would wrap a uint16_t four hundred times over.
+  const uint16_t spanFx2     = (uint16_t)((SERVO_DEG_MAX - SERVO_DEG_MIN) * 100);
+  const uint16_t travelledFx2 = (uint16_t)(servoPositionFx2 - SERVO_DEG_MIN * 100);
+  const uint16_t pulseMicros = SERVO_PULSE_MAX_US -
+      (uint16_t)(((uint32_t)travelledFx2 *
+                  (SERVO_PULSE_MAX_US - SERVO_PULSE_MIN_US)) / spanFx2);
   digitalWrite(SERVO_PIN, HIGH);
   delayMicroseconds(pulseMicros);
   digitalWrite(SERVO_PIN, LOW);
@@ -292,7 +316,7 @@ static void servoAdvanceAndPulse(uint32_t now) {
 // temperature and subtract the reported reading from it. Expect it to
 // over-correct once the chip is working, because part of what you trim away is
 // real die heating rather than sensor error.
-static const int32_t DEGREE_F_OFFSET_FX2 = 3100;  // +31.00 F, see note below
+static const int32_t DEGREE_F_OFFSET_FX2 = 4300;  // +43.00 F, see note below
 
 /**
  * Read the die temperature.
@@ -326,19 +350,25 @@ static int32_t readDieTemperatureFx2() {
  * Called once for every key/value pair the host sends.
  * Unknown keys are ignored, which is what keeps a device forward-compatible.
  */
-void uplineOnKeyValPair(const char* key, const char* value, bool isFlag) {
-  if (isFlag) return;                           // no flags defined here
-  if (!strcmp(key, "servo")) {
-    const long requested = atol(value);
-    if (requested >= 0 && requested <= 160) {
+void uplineOnEntry(const UplineEntry& entry) {
+  if (entry.isRead()) {                         // a read: report without changing
+    if (!strcmp(entry.key, "servo")) pendingAckMask |= ACK_SERVO;
+    else if (!strcmp(entry.key, "led")) pendingAckMask |= ACK_LED;
+    return;
+  }
+  if (!strcmp(entry.key, "servo")) {
+    int32_t requested;
+    // A corrupted value frames perfectly; refusing it beats commanding zero.
+    if (uplineParseNumber(entry.value(0), 0, &requested)
+        && requested >= SERVO_DEG_MIN && requested <= SERVO_DEG_MAX) {
       servoTargetDegrees = (uint8_t)requested;
     }
     // Acknowledge even when the value was refused. The reply carries the value
     // actually in force, so a host that asked for 200 and gets 80 back learns
     // its command was rejected rather than lost — silence could mean either.
     pendingAckMask |= ACK_SERVO;
-  } else if (!strcmp(key, "led")) {
-    ledIsOn = (value[0] == '1');
+  } else if (!strcmp(entry.key, "led")) {
+    ledIsOn = (entry.value(0)[0] == '1');
     digitalWrite(LED_PIN, ledIsOn ? HIGH : LOW);
     pendingAckMask |= ACK_LED;
   }
@@ -347,7 +377,7 @@ void uplineOnKeyValPair(const char* key, const char* value, bool isFlag) {
 /**
  * Reply with just the keys a command touched, if any.
  *
- * Deliberately not sent from inside uplineOnKeyValPair: that runs while the
+ * Deliberately not sent from inside uplineOnEntry: that runs while the
  * parser is still walking the record, and write() holds interrupts off for a
  * whole byte, so acknowledging there would go half-duplex mid-record and could
  * swallow bytes of whatever the host sent next. Called from loop() instead,
@@ -371,7 +401,7 @@ void setup() {
   pinMode(SERVO_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
   digitalWrite(SERVO_PIN, LOW);
-  upline.onPair(uplineOnKeyValPair);
+  upline.onEntry(uplineOnEntry);
 }
 
 void loop() {

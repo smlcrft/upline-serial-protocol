@@ -1,6 +1,6 @@
 // upline.hpp — Upline serial protocol, single-header C++ implementation.
 //
-//   ^temp|23.45~rh|48~fan|1^
+//   ^temp~23.45^rh~48^fan~1^
 //
 // A newline-delimited ASCII key/value protocol for microcontrollers: publish
 // state, accept commands, and describe yourself, over UART / USB / BT-Serial.
@@ -13,26 +13,27 @@
 //   #include "upline.hpp"
 //
 //   // 1. Declare what this device is and what keys it has. Lives in flash,
-//   //    not RAM. Write only the pairs — the "^!~" and "^" are added for you.
+//   //    not RAM. Write only your own values: the framing, _v and _r are
+//   //    filled in for you, so the buffer size can never drift out of sync.
 //   //    uuid / name / desc / ver are required; the rest are yours.
 //   UPLINE_SCHEMA(mySchema,
-//     "uuid|n4o8IUt-TQWzph4vfI2Qqw"      // unique per device
-//     "~name|Greenhouse"
-//     "~desc|North bed sensors"
-//     "~ver|1"                            // Upline version, always 1
-//     "~temp|fix2|r||-40.00|125.00"       // 2-decimal sensor, range -40..125
-//     "~fan|bool|rw|0");                  // on/off, settable, defaults off
+//     "_i|n4o8IUt-TQWzph4vfI2Qqw"        // unique per device
+//     "~_n|Greenhouse"
+//     "~_d|North bed sensors"
+//     "~temp|r|fix2||-40.00|125.00"       // 2-decimal sensor, range -40..125
+//     "~fan|rw|bool|0");                  // on/off, settable, defaults off
 //
 //   Upline upline(Serial, mySchema);
 //
 //   // 2. Handle anything the host sends you. Optional.
-//   void uplineOnKeyValPair(const char* key, const char* value, bool isFlag) {
-//     if (!strcmp(key, "fan")) digitalWrite(FAN_PIN, value[0] == '1');
+//   void uplineOnEntry(const UplineEntry& entry) {
+//     if (entry.isRead()) return;         // ^fan^ asks for the value, does not set it
+//     if (!strcmp(entry.key, "fan")) digitalWrite(FAN_PIN, entry.value(0)[0] == '1');
 //   }
 //
 //   void setup() {
 //     Serial.begin(115200);               // 9600 if your clock is an internal RC
-//     upline.onPair(uplineOnKeyValPair);
+//     upline.onEntry(uplineOnEntry);
 //   }
 //
 //   void loop() {
@@ -59,23 +60,20 @@
 // here is inline, so anything you never call is never emitted. You do not have
 // to disable features you are not using — the linker already did.
 //
-// What the parts actually cost, measured on a complete sketch:
+// Measured on the bundled examples, which are what you can reproduce:
 //
-//                                        Uno            ATtiny85
-//   int + bool only ................. 3276 B / 342 B   2666 B / 237 B
-//   + addFixed + addBase64 .......... +478 B           +462 B
-//   UPLINE_TRANSMIT_ONLY 1 .......... -638 B / -133 B  -642 B / -133 B
-//   UPLINE_RX_BUFFER_SIZE, per byte ..        / -1 B            / -1 B
+//   Basic                    Uno / ATmega328P    4060 B / 358 B
+//   ATtiny85_ServoLedTemp    ATtiny85            4426 B / 262 B
+//   ItsyBitsyM4_RgbAndTemp   ItsyBitsy M4       13168 B
 //
-// So the two knobs that genuinely change the build are UPLINE_TRANSMIT_ONLY,
-// which removes the parser and receive buffer, and UPLINE_RX_BUFFER_SIZE,
-// which is pure RAM. UPLINE_ENABLE_FIXED and UPLINE_ENABLE_BASE64 save nothing
-// on a normal Arduino build; they exist as a guardrail, so that a project with
-// a hard size ceiling gets a compile error instead of silently linking a
-// feature, and for toolchains that do not garbage-collect unused sections.
-//
-// A tight ATtiny85 sensor — integers and booleans only, full send and receive —
-// lands at 2710 B of 8192 B flash and 241 B of 512 B RAM.
+// The knobs that genuinely change the build are UPLINE_TRANSMIT_ONLY, which
+// removes the parser and the receive buffer entirely, UPLINE_RX_BUFFER_SIZE,
+// which is pure RAM, and UPLINE_MAX_VALUES / UPLINE_MAX_SUBVALUES, which bound
+// how complex a single inbound entry may be. UPLINE_ENABLE_FIXED and
+// UPLINE_ENABLE_BASE64 save nothing on a normal Arduino build; they exist as a
+// guardrail, so a project with a hard size ceiling gets a compile error instead
+// of silently linking a feature, and for toolchains that do not garbage-collect
+// unused sections.
 //
 // ── PLATFORMS ────────────────────────────────────────────────────────────────
 //
@@ -105,12 +103,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Largest inbound record the device can receive, in bytes. This limits only
-// what the device READS; records it sends may be any length (spec §11).
+// what the device READS; records it sends may be any length (spec §10).
 //
 // 128 is the floor the spec requires, and it is deliberately above the 120-byte
 // host-to-device recommendation so a conforming host can never overflow it.
 // Lowering it below 128 makes the device non-conforming — do that only if you
 // also control the host and know its commands are shorter.
+/** Upline version this library speaks. Emitted as `_v` (spec §7). */
+#define UPLINE_VERSION 1
+
 #ifndef UPLINE_RX_BUFFER_SIZE
 #define UPLINE_RX_BUFFER_SIZE 128
 #endif
@@ -141,7 +142,7 @@
 // link, or a sensor that must never be commandable. Drops the receive buffer,
 // the line reader, and the parser.
 //
-// This is a conforming profile, not a crippled device (spec §9.1): since such a
+// This is a conforming profile, not a crippled device (spec §9): since such a
 // device can never answer "?", poll() broadcasts the "!" schema unprompted
 // instead, so a host still discovers it. Everything else is unchanged.
 #ifndef UPLINE_TRANSMIT_ONLY
@@ -157,6 +158,19 @@
 
 // Internal: receive support is simply the inverse of the transmit-only profile.
 #define UPLINE_ENABLE_RECEIVE (!UPLINE_TRANSMIT_ONLY)
+
+// Turn a macro's *value* into a string literal, so the schema can carry numbers
+// that are defined elsewhere without anyone retyping them.
+#define UPLINE_STRINGIFY_(x) #x
+#define UPLINE_STRINGIFY(x) UPLINE_STRINGIFY_(x)
+
+// What `_r` advertises. A transmit-only build has no receive path at all, and
+// spec §10 spells that as 0 — the value a host reads to learn it must never send.
+#if UPLINE_TRANSMIT_ONLY
+#define UPLINE_DECLARED_RX 0
+#else
+#define UPLINE_DECLARED_RX UPLINE_RX_BUFFER_SIZE
+#endif
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Platform glue
@@ -186,7 +200,7 @@
 // Off Arduino you MUST define this, or the fallback below leaves the clock
 // frozen at zero and poll() emits a heartbeat on every single call. The free
 // parsing functions do not use it, so a project that only calls
-// uplineParseRecord can ignore this entirely.
+// uplineParseLine can ignore this entirely.
 #ifndef UPLINE_MILLIS
 #if defined(ARDUINO)
 #define UPLINE_MILLIS() millis()
@@ -202,12 +216,17 @@
  * added for you. Adjacent string literals concatenate, so a long schema can be
  * split across lines for readability at no cost.
  *
- * The four mandatory keys are `uuid`, `name`, `desc`, and `ver` (spec §8).
+ * Supply `_i`, `_n`, and `_d` yourself (spec §7). `_v` and `_r` are added
+ * automatically from UPLINE_VERSION and the receive buffer — a transmit-only
+ * build declares `_r|0` on its own, so a host is never told to send to a device
+ * that cannot listen.
  *
- * A data key is `name|type|access|default|min|max`, every sub-field after the
- * type optional. Access is `r` (the default, so a sensor declares nothing),
- * `rw`, or `w`; `min` and `max` are independent (spec §8.2). A `cmd` key names
- * an action the host invokes as `^key^` and takes no sub-fields.
+ * A data key declaration is `name|mode|type|default|min|max`, every sub-value
+ * after the mode optional. Mode is `r` (the default, so a sensor may leave it
+ * empty), `rw`, `w`, `x` for an executable, or `d` for a declaration-only
+ * parameter; `min` and `max` are independent (spec §8.1). An `x` key names an
+ * action the host invokes as `^key^`, and any sub-values after the mode are the
+ * names of the keys it takes as arguments.
  *
  *   UPLINE_SCHEMA(mySchema,
  *     "uuid|n4o8IUt-TQWzph4vfI2Qqw"
@@ -222,31 +241,88 @@
  * @param ...       the descriptor body, as one or more string literals
  */
 #define UPLINE_SCHEMA(name, ...) \
-  static const char name[] UPLINE_FLASH_STORAGE = "^!~" __VA_ARGS__ "^"
+  static const char name[] UPLINE_FLASH_STORAGE =                              \
+    "^?~_v|" UPLINE_STRINGIFY(UPLINE_VERSION)                                    \
+    "~_r|"   UPLINE_STRINGIFY(UPLINE_DECLARED_RX)                                \
+    "~" __VA_ARGS__ "^"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Parse results
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Outcome of parsing one record. Only UplineOk means the record was valid. */
+/**
+ * Outcome of parsing one line. Per-entry problems are not reported here: a
+ * malformed entry is dropped on its own and the rest of the line still applies
+ * (spec §3), so a line carrying one bad entry among good ones is UplineOk.
+ */
 enum UplineResult {
-  UplineOk = 0,            ///< Record parsed; every pair was dispatched.
+  UplineOk = 0,            ///< Line parsed; every fully bounded entry was dispatched.
   UplineNotUpline = -1,    ///< Line did not start with '^'. Ignore it, not an error.
-  UplineBadEscape = -2,    ///< Undefined or dangling backslash escape.
-  UplineTruncated = -3,    ///< No closing '^' before end of line.
-  UplineTrailing = -4,     ///< Bytes appeared after the closing '^'.
-  UplineBadKey = -5        ///< Empty key, or an undefined '_' key as the command.
+  UplineTruncated = -2     ///< Line did not end in an unescaped '^'. The trailing
+                           ///< fragment was dropped; entries before it WERE dispatched.
 };
 
-/** Callback for each key/value pair, as used by the UplineDevice class. */
-typedef void (*UplinePairHandler)(const char* key, const char* value, bool isFlag);
+/**
+ * Most values a single entry may carry, and most sub-values across all of them
+ * (spec §5). An entry exceeding either is dropped rather than truncated, so this
+ * bounds what the device can *receive*, exactly as UPLINE_RX_BUFFER_SIZE does.
+ * Both live on the stack for the duration of one parse.
+ */
+#ifndef UPLINE_MAX_VALUES
+#define UPLINE_MAX_VALUES 6
+#endif
+#ifndef UPLINE_MAX_SUBVALUES
+#define UPLINE_MAX_SUBVALUES 10
+#endif
 
 /**
- * Callback for each key/value pair, as used by uplineParseRecord directly.
- * `context` is whatever you passed in, so several parsers can run independently.
+ * One decoded entry: a key and its values, each of which is one or more
+ * sub-values (spec §5). Everything points into the caller's line buffer and
+ * stays valid only until the next line is read.
+ *
+ *   ^temp^            key "temp", valueCount 0        -- a read, or an execute
+ *   ^temp~23.45^      key "temp", value(0) "23.45"
+ *   ^temp~^           key "temp", value(0) ""         -- a write of the empty string
+ *   ^rgb~1|2|3^       key "rgb",  sub(0,0..2) "1","2","3"
+ *   ^beep~440~0.5^    key "beep", value(0) "440", value(1) "0.5"
  */
-typedef void (*UplinePairHandlerWithContext)(void* context, const char* key,
-                                             const char* value, bool isFlag);
+struct UplineEntry {
+  const char* key;         ///< Unescaped; never empty.
+  uint8_t valueCount;      ///< 0 for `^key^`.
+
+  /** True for `^key^` — no values at all. A read, or an execute with no arguments. */
+  bool isRead() const { return valueCount == 0; }
+
+  /** First sub-value of value `index`, or "" when there is none. The common
+      case: a scalar value is simply a single sub-value. */
+  const char* value(uint8_t index) const { return sub(index, 0); }
+
+  /** Sub-value `subIndex` of value `index`, or "" when out of range. */
+  const char* sub(uint8_t index, uint8_t subIndex) const {
+    if (index >= valueCount || subIndex >= subCounts[index]) return "";
+    uint8_t flat = subIndex;
+    for (uint8_t v = 0; v < index; ++v) flat = (uint8_t)(flat + subCounts[v]);
+    return subs[flat];
+  }
+
+  /** How many sub-values value `index` carries. One for a scalar. */
+  uint8_t subCount(uint8_t index) const {
+    return index < valueCount ? subCounts[index] : 0;
+  }
+
+  uint8_t subCounts[UPLINE_MAX_VALUES];
+  char*   subs[UPLINE_MAX_SUBVALUES];   ///< flat, in wire order
+  uint8_t subTotal;
+};
+
+/** Callback for each entry, as used by the UplineDevice class. */
+typedef void (*UplineEntryHandler)(const UplineEntry& entry);
+
+/**
+ * Callback for each entry, as used by uplineParseLine directly. `context` is
+ * whatever you passed in, so several parsers can run independently.
+ */
+typedef void (*UplineEntryHandlerWithContext)(void* context, const UplineEntry& entry);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Core codec — free functions, usable without the Upline class
@@ -256,9 +332,8 @@ typedef void (*UplinePairHandlerWithContext)(void* context, const char* key,
  * Decode backslash escapes in place. The result is always the same length or
  * shorter, so it safely overwrites its input.
  *
- * Recognises \\  \^  \|  \~  \n  \r  (spec §5). Assumes the text already passed
- * validation in uplineParseRecord; the trailing-backslash guard only keeps this
- * safe if you call it directly on untrusted text.
+ * Recognises \\  \^  \|  \~  \n  \r  (spec §4). The trailing-backslash guard
+ * keeps this safe even on text that has not been validated.
  *
  * @param text  NUL-terminated string, modified in place
  */
@@ -279,106 +354,120 @@ inline void uplineUnescapeInPlace(char* text) {
 }
 
 /**
- * True for a '_'-prefixed key this library does not define — "_e" is the only
- * one it does (spec §6). Such a key is ignored rather than dispatched, so a
- * future version of the protocol can add a field without breaking this parser.
+ * True for a '_'-prefixed key this specification does not define. Such a key is
+ * ignored rather than dispatched, so a future version of the protocol can add a
+ * field without breaking this parser (spec §7).
+ *
+ * The six defined ones are all two characters: _i uuid, _n name, _d description,
+ * _v version, _r receive buffer size, _e error.
  *
  * Checking before unescaping is safe: a key cannot acquire a leading '_' that
  * way, because "\_" is an undefined escape and the scan rejects it first.
  */
 inline bool uplineIsKeyUnknownReserved(const char* key) {
-  return *key == '_' && !(key[1] == 'e' && key[2] == '\0');
+  if (*key != '_') return false;
+  if (!key[1] || key[2]) return true;                  // "_" alone, or longer than two
+  switch (key[1]) {
+    case 'i': case 'n': case 'd': case 'v': case 'r': case 'e': return false;
+    default: return true;
+  }
 }
 
 /**
- * Parse one complete record and dispatch each key/value pair.
+ * Parse one complete line and dispatch each entry.
  *
- * The record must already have its line terminator removed — see UplineDevice
- * for the reader that does that. The buffer is modified in place: separators
- * become NUL terminators and escapes are decoded, so `key` and `value` point
- * into it and stay valid only until the next record is read.
+ * The line must already have its terminator removed — see UplineDevice for the
+ * reader that does that. The buffer is modified in place: separators become NUL
+ * terminators and escapes are decoded, so everything the entry points at stays
+ * valid only until the next line is read.
  *
- * A pair with no '|' is a flag: `value` is "" and `isFlag` is true. A first-
- * position flag is the record's command (spec §7).
+ * An entry is the text between two unescaped carets and **both must be seen**
+ * before it is dispatched (spec §3): the leading caret proves it began where we
+ * think it did, the trailing caret proves it arrived whole. So a line missing
+ * its opening caret is ignored entirely, and a trailing fragment is dropped
+ * without disturbing the complete entries ahead of it.
  *
- * Pairs are dispatched as they are scanned, so if a later pair is malformed the
- * handler may already have seen earlier ones. A pair is only ever dispatched
- * once its terminator is seen, so a truncated record never delivers a partial
- * value. Stage and commit in your handler if partial application is unsafe.
+ * Entries are dispatched as they are scanned, and each is self-contained — no
+ * entry's meaning depends on another, so partial application is not a hazard the
+ * way it was when a record's first pair scoped the rest.
  *
- * @param line     one record, terminator stripped; modified in place
+ * @param line     one line, terminator stripped; modified in place
  * @param length   bytes in `line`, not counting the NUL
- * @param handler  called once per pair, in wire order
+ * @param handler  called once per complete, well-formed entry, in wire order
  * @param context  passed straight through to the handler; may be NULL
- * @return         UplineOk, or a negative UplineResult
  */
-inline UplineResult uplineParseRecord(char* line, size_t length,
-                                      UplinePairHandlerWithContext handler,
-                                      void* context) {
-  char* cursor = line;
-  char* end = line + length;
-
+inline UplineResult uplineParseLine(char* line, size_t length,
+                                    UplineEntryHandlerWithContext handler,
+                                    void* context) {
   // A line that does not open with '^' is not ours — foreign traffic or debug
-  // output sharing the same port. Silently ignored, never an error (spec §4).
-  if (length < 1 || *cursor++ != '^') return UplineNotUpline;
+  // output sharing the same port. Silently ignored, never an error (spec §3).
+  if (length < 1 || *line != '^') return UplineNotUpline;
 
-  char* key = cursor;
-  char* value = NULL;
-  unsigned pairCount = 0;                // spec §6 first-position test
+  UplineEntry entry;
+  char* end = line + length;
+  char* key = line + 1;
+  bool valid = true;                 // current entry survived validation
+  entry.valueCount = 0;
+  entry.subTotal = 0;
 
-  for (; cursor < end; ++cursor) {
+  for (char* cursor = key; cursor < end; ++cursor) {
     // Skip over a valid escape so an escaped delimiter is not mistaken for a
     // real one. This is why a plain strtok cannot parse Upline.
     if (*cursor == '\\') {
-      if (cursor + 1 >= end) return UplineBadEscape;     // dangling backslash
+      if (cursor + 1 >= end) break;                      // dangling: fragment, dropped
       switch (cursor[1]) {
         case '\\': case '^': case '|': case '~': case 'n': case 'r':
           ++cursor;
           continue;
         default:
-          return UplineBadEscape;                        // undefined escape
+          valid = false;                                 // undefined escape (spec §4)
+          continue;
       }
     }
 
-    // Only the FIRST unescaped '|' splits key from value; later bars are
-    // ordinary value bytes, which is what lets values carry sub-structure.
-    if (*cursor == '|' && value == NULL) {
+    if (*cursor == '~') {                                // next value
       *cursor = '\0';
-      value = cursor + 1;
+      if (entry.valueCount < UPLINE_MAX_VALUES && entry.subTotal < UPLINE_MAX_SUBVALUES) {
+        entry.subs[entry.subTotal++] = cursor + 1;
+        entry.subCounts[entry.valueCount++] = 1;
+      } else {
+        valid = false;                                   // more than this build accepts
+      }
       continue;
     }
 
-    if (*cursor == '~' || *cursor == '^') {
-      char terminator = *cursor;
+    if (*cursor == '|') {                                // next sub-value
       *cursor = '\0';
-
-      // Empty segments (from "~~" or a leading/trailing "~") are ignored.
-      if (*key || value) {
-        if (!*key) return UplineBadKey;                     // empty key
-        if (uplineIsKeyUnknownReserved(key)) {
-          // Ignored — except in first position, where dropping it would
-          // promote the next pair into command position (spec §6, §7).
-          if (pairCount == 0) return UplineBadKey;
-        } else {
-          uplineUnescapeInPlace(key);
-          if (value) uplineUnescapeInPlace(value);
-          handler(context, key, value ? value : "", value == NULL);
-          ++pairCount;
-        }
+      if (entry.valueCount && entry.subTotal < UPLINE_MAX_SUBVALUES) {
+        entry.subs[entry.subTotal++] = cursor + 1;
+        ++entry.subCounts[entry.valueCount - 1];
+      } else {
+        valid = false;                                   // a bar in the key, or too many
       }
+      continue;
+    }
 
-      // The closing caret must be the line's last byte. Anything after it means
-      // a lost newline merged two records — reject rather than silently accept.
-      if (terminator == '^') {
-        return (cursor + 1 == end) ? UplineOk : UplineTrailing;
+    if (*cursor == '^') {                                // entry complete
+      *cursor = '\0';
+      if (valid && *key && !uplineIsKeyUnknownReserved(key)) {
+        // Unescape after splitting, never before: only unescaped separators
+        // divide, so `a\|b` must stay one sub-value (spec §5).
+        uplineUnescapeInPlace(key);
+        for (uint8_t i = 0; i < entry.subTotal; ++i) uplineUnescapeInPlace(entry.subs[i]);
+        entry.key = key;
+        handler(context, entry);
       }
-
       key = cursor + 1;
-      value = NULL;
+      entry.valueCount = 0;
+      entry.subTotal = 0;
+      valid = true;
+      if (cursor + 1 == end) return UplineOk;            // the caret closed the line
     }
   }
 
-  return UplineTruncated;                                // never saw a closing '^'
+  // Fell off the end without a closing caret: whatever is left is an incomplete
+  // entry. It is dropped, but everything dispatched above stands (spec §3).
+  return UplineTruncated;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -440,26 +529,66 @@ inline char* uplineFormatScaled(int32_t value, uint8_t scale, char* buffer) {
  * @param scale  implied fractional digits, 0 to 9
  * @return       the scaled integer
  */
-inline int32_t uplineParseScaled(const char* text, uint8_t scale) {
-  int32_t value = 0;
+/** Append one digit, refusing anything that would exceed INT32_MAX. */
+inline bool uplineAccumulateDigit(uint32_t* value, uint8_t digit) {
+  if (*value > 214748364UL) return false;               // *10 would overflow
+  *value = *value * 10UL + digit;
+  return *value <= 2147483647UL;                        // the digit pushed it over
+}
+
+/**
+ * Parse decimal text into a scaled integer, refusing anything it cannot fully
+ * consume (spec §8.4). `int` is scale 0, so this serves both types.
+ *
+ * Accepts a leading sign, a missing integer part (".5"), and a short or absent
+ * fraction ("23" at scale 2 becomes 2300). Excess fractional digits round half
+ * up. Rejects an empty string, a bare sign or dot, any character outside
+ * [+-.0-9], anything that does not fit int32_t, and ANY trailing byte — so
+ * "2 3" and "1.5e3" both fail.
+ *
+ * Returning false rather than 0 is the whole point. A noisy link produces lines
+ * that frame perfectly but carry a corrupted value, and a parser that quietly
+ * yields 0 for "" and for "abc" turns that into a setpoint. Drop the entry.
+ *
+ * @param text   NUL-terminated decimal text
+ * @param scale  implied fractional digits, 0 for a plain integer
+ * @param out    receives the scaled value; untouched on failure
+ * @return       true if the whole string was a valid number
+ */
+inline bool uplineParseNumber(const char* text, uint8_t scale, int32_t* out) {
+  uint32_t value = 0;
   bool isNegative = false;
+  uint8_t digits = 0;
 
   if (*text == '-') { isNegative = true; ++text; }
   else if (*text == '+') { ++text; }
 
-  while (*text >= '0' && *text <= '9') value = value * 10 + (*text++ - '0');
+  while (*text >= '0' && *text <= '9') {
+    if (!uplineAccumulateDigit(&value, (uint8_t)(*text++ - '0'))) return false;
+    ++digits;
+  }
 
   if (*text == '.') {
     ++text;
     while (scale && *text >= '0' && *text <= '9') {
-      value = value * 10 + (*text++ - '0');
+      if (!uplineAccumulateDigit(&value, (uint8_t)(*text++ - '0'))) return false;
+      ++digits;
       --scale;
     }
-    if (*text >= '5' && *text <= '9') ++value;          // round half up
+    if (*text >= '5' && *text <= '9') {                  // round half up
+      if (value == 2147483647UL) return false;
+      ++value;
+    }
+    while (*text >= '0' && *text <= '9') ++text;         // discard excess digits
   }
 
-  while (scale--) value *= 10;                          // pad a short fraction
-  return isNegative ? -value : value;
+  if (!digits || *text) return false;                    // no digits, or trailing junk
+  while (scale--) {                                      // pad a short fraction
+    if (!uplineAccumulateDigit(&value, 0)) return false;
+  }
+
+  *out = isNegative ? -(int32_t)value : (int32_t)value;
+  return true;
 }
 #endif  // UPLINE_ENABLE_FIXED
 
@@ -552,11 +681,11 @@ class UplineDevice {
   {}
 
   /**
-   * Register the callback that receives each inbound key/value pair.
-   * By convention the callback is named uplineOnKeyValPair, matching this
-   * library's free-function prefix and keeping it greppable in a large sketch.
+   * Register the callback that receives each inbound entry.
+   * By convention the callback is named uplineOnEntry, matching this library's
+   * free-function prefix and keeping it greppable in a large sketch.
    */
-  void onPair(UplinePairHandler uplineOnKeyValPair) { handler_ = uplineOnKeyValPair; }
+  void onEntry(UplineEntryHandler uplineOnEntry) { handler_ = uplineOnEntry; }
 
   /**
    * Service the port. Call this every time through loop().
@@ -627,45 +756,46 @@ class UplineDevice {
     recordIsEmpty_ = true;
   }
 
-  /** Close the record and terminate the line. Also resets the heartbeat timer. */
+  /** Close the line and terminate it. Also resets the heartbeat timer. */
   void endRecord() {
-    port_.write((uint8_t)'^');
+    if (recordIsEmpty_) port_.write((uint8_t)'^');   // "^^" — the canonical heartbeat
     port_.write((uint8_t)'\n');
     lastSendMillis_ = UPLINE_MILLIS();
   }
 
-  /** Add `key|value` with the value escaped as needed. */
+  /** Add the entry `key~value`, with both escaped as needed. */
   void addText(const char* key, const char* value) {
-    writeSeparator();
     writeEscaped(key);
-    port_.write((uint8_t)'|');
+    port_.write((uint8_t)'~');
     writeEscaped(value);
+    endEntry();
   }
 
-  /** Add `key|value` for a whole number. */
+  /** Add the entry `key~value` for a whole number. */
   void addInt(const char* key, int32_t value) {
     char buffer[UPLINE_NUMBER_BUFFER_SIZE];
-    writeSeparator();
     writeEscaped(key);
-    port_.write((uint8_t)'|');
+    port_.write((uint8_t)'~');
     writePlain(uplineFormatScaled(value, 0, buffer));
+    endEntry();
   }
 
-  /** Add `key|0` or `key|1`. */
+  /** Add the entry `key~0` or `key~1`. */
   void addBool(const char* key, bool value) {
-    writeSeparator();
     writeEscaped(key);
-    port_.write((uint8_t)'|');
+    port_.write((uint8_t)'~');
     port_.write((uint8_t)(value ? '1' : '0'));
+    endEntry();
   }
 
   /**
-   * Add a key with no value. In first position this is the record's command;
-   * anywhere else it means "true" or "present".
+   * Add a key with no value at all. From a host this is a read, or an execute
+   * with no arguments (spec §6); from a device it is rarely what you want —
+   * a reading is `addText`/`addInt`/`addFixed`.
    */
   void addFlag(const char* key) {
-    writeSeparator();
     writeEscaped(key);
+    endEntry();
   }
 
 #if UPLINE_ENABLE_FIXED
@@ -677,10 +807,10 @@ class UplineDevice {
    */
   void addFixed(const char* key, int32_t scaledValue, uint8_t scale) {
     char buffer[UPLINE_NUMBER_BUFFER_SIZE];
-    writeSeparator();
     writeEscaped(key);
-    port_.write((uint8_t)'|');
+    port_.write((uint8_t)'~');
     writePlain(uplineFormatScaled(scaledValue, scale, buffer));
+    endEntry();
   }
 #endif
 
@@ -691,9 +821,8 @@ class UplineDevice {
    * contains no reserved character, so nothing needs escaping.
    */
   void addBase64(const char* key, const uint8_t* data, size_t byteCount) {
-    writeSeparator();
     writeEscaped(key);
-    port_.write((uint8_t)'|');
+    port_.write((uint8_t)'~');
 
     uint32_t accumulator = 0;
     int8_t bitsHeld = 0;
@@ -708,17 +837,18 @@ class UplineDevice {
     if (bitsHeld) {  // flush the final partial group, left-aligned, unpadded
       port_.write((uint8_t)uplineBase64Char((uint8_t)((accumulator << (6 - bitsHeld)) & 0x3F)));
     }
+    endEntry();
   }
 #endif
 
-  /** Send a one-pair record: `^key|value^`. */
+  /** Send a one-pair record: `^key~value^`. */
   void sendText(const char* key, const char* value) {
     beginRecord();
     addText(key, value);
     endRecord();
   }
 
-  /** Send a one-pair record: `^key|value^` for a whole number. */
+  /** Send a one-pair record: `^key~value^` for a whole number. */
   void sendInt(const char* key, int32_t value) {
     beginRecord();
     addInt(key, value);
@@ -758,7 +888,7 @@ class UplineDevice {
   }
 
  private:
-  // Write text with every reserved character escaped (spec §5).
+  // Write text with every reserved character escaped (spec §6).
   void writeEscaped(const char* text) {
     for (const char* cursor = text; *cursor; ++cursor) {
       char character = *cursor;
@@ -780,36 +910,38 @@ class UplineDevice {
     for (const char* cursor = text; *cursor; ++cursor) port_.write((uint8_t)*cursor);
   }
 
-  void writeSeparator() {
-    if (!recordIsEmpty_) port_.write((uint8_t)'~');
+  // Every entry closes with its own caret, so the caret that ends one entry is
+  // also the caret that opens the next (spec §3). No separator bookkeeping.
+  void endEntry() {
+    port_.write((uint8_t)'^');
     recordIsEmpty_ = false;
   }
 
 #if UPLINE_ENABLE_RECEIVE
-  // Parse one record, answering "?" ourselves and passing everything else on.
+  // Parse one line, answering "?" ourselves and passing everything else on.
   void dispatch(char* line, size_t length) {
     schemaRequested_ = false;
-    uplineParseRecord(line, length, &UplineDevice::route, this);
-    // A malformed record is simply dropped. Call sendError() from your handler
-    // if you would rather say so out loud.
+    uplineParseLine(line, length, &UplineDevice::route, this);
+    // Malformed entries are dropped individually. Call sendError() from your
+    // handler if you would rather say so out loud.
     if (schemaRequested_) sendSchema();
   }
 
   // Trampoline from the parser's plain function pointer back to this instance.
   // Passing `this` as context is what lets several ports coexist.
-  static void route(void* context, const char* key, const char* value, bool isFlag) {
+  static void route(void* context, const UplineEntry& entry) {
     UplineDevice* self = (UplineDevice*)context;
-    if (isFlag && key[0] == '?' && key[1] == '\0') {
+    if (entry.isRead() && entry.key[0] == '?' && entry.key[1] == '\0') {
       self->schemaRequested_ = true;          // answered once parsing completes
       return;
     }
-    if (self->handler_) self->handler_(key, value, isFlag);
+    if (self->handler_) self->handler_(entry);
   }
 #endif
 
   SerialPort& port_;
   const char* schema_;
-  UplinePairHandler handler_;
+  UplineEntryHandler handler_;
   uint32_t lastSendMillis_;
   uint32_t lastSchemaMillis_;
   bool recordIsEmpty_;

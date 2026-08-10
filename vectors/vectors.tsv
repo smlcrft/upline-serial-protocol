@@ -1,0 +1,76 @@
+id	kind	input	scale	expected	note
+1	line	^^		∅	heartbeat; no entries
+2	line	^a~1^		a=[1]	
+3	line	^a~1^b~2^		a=[1], b=[2]	
+4	line	^a~1^b~2^c~3^		a=[1], b=[2], c=[3]	
+5	line	^^^		∅	empty entries are ignored
+6	line	^a~1^^b~2^		a=[1], b=[2]	empty entry between two real ones
+7	line	temp:23.5 rpm:1200		IGNORE	foreign line, NOT an error
+8	line	hello world		IGNORE	
+9	line	<empty line>		IGNORE	
+10	line	^		∅	one caret; no complete entries
+11	line	^a~1		∅	nothing terminated it
+12	line	^a~1^b		a=[1]	trailing fragment b dropped
+13	line	^a~1^junk		a=[1]	same rule, longer fragment
+14	line	^a~1^\x20		a=[1]	trailing space is a fragment
+15	line	^a~1^b~2^c~3		a=[1], b=[2]	the canonical truncation
+16	line	a~1^b~2^		IGNORE	no leading caret: the first entry's left boundary is unproven, so the whole line is foreign — NOT b=[2]
+17	line	^v~a\^b^		v=[a^b]	
+18	line	^v~a\~b^		v=[a~b]	
+19	line	^v~a\|b^		v=[a\|b]	escaped bar: ONE sub-value
+20	line	^v~a\\b^		v=[a\b]	
+21	line	^v~line1\nline2^		v=[line1<LF>line2]	THE NEWLINE ESCAPE
+22	line	^v~x\r\ny^		v=[x<CR><LF>y]	
+23	line	^k\~ey~1^		key "k~ey" = [1]	
+24	line	^k\^ey~1^		key "k^ey" = [1]	
+25	line	^k\|ey~1^		key "k|ey" = [1]	
+26	line	^v~a\qb^		∅	undefined escape; entry dropped
+27	line	^v~a\^		∅	valid \^ eats the closing caret; nothing was terminated
+28	line	^v~a\\^		v=[a\]	contrast with 27
+29	line	^a~1^v~b\qc^d~2^		a=[1], d=[2]	bad entry dropped, rest apply
+30	line	^key^		key	no values
+31	line	^key~^		key=[]	ONE empty value; distinct from 30
+32	line	^a~1~2^		a=[1][2]	two values
+33	line	^tags~a|b|c^		tags=[a|b|c]	one value, three sub-values
+34	line	^plot~1|2|3~red^		plot=[1|2|3][red]	array value, then scalar value
+35	line	^a~|^		a=[<empty>|<empty>]	one value, two empty sub-values
+36	line	^~1^		∅	empty key; entry dropped
+37	line	^a~1^a~2^		a=[1], a=[2]	both dispatched; last-wins is the caller's
+38	line	^utf~温度^		utf=[温度]	
+39	line	^t~12:34:56^		t=[12:34:56]	colon is not reserved
+40	line	^raw~-_8AAQ^		raw=[-_8AAQ]	base64url never needs escaping
+41	line	^desc~A "quoted", {list}: ok!^		desc=[A "quoted", {list}: ok!]	
+42	line	^_e~badescape^		_e=[badescape]	
+43	line	^_e~unknown key: humidty^		_e=[unknown key: humidty]	
+44	line	^_z~2^		∅	unknown _ key ignored, NOT an error
+45	line	^a~1^_z~2^b~3^		a=[1], b=[3]	
+46	line	^_i^		_i	a defined reserved key, so it is parsed rather than dropped (§7)
+47	schema	^?^		?	schema request
+48	schema	^?~_i|x~_n|Bench~_d|Rig~_v|1~_r|128~t|r|fix2|20.00|-40.00|125.00^		_i=x, _n=Bench, _d=Rig, _v=1, _r=128 → t: mode=r, type=fix2, default=20.00, min=-40.00, max=125.00	
+49	schema	^?~…~fan|rw|bool|0^		fan: mode=rw, type=bool, default=0, no range	
+50	schema	^?~…~t||fix2|5.00^		t: mode absent → r; default 5.00, no range	
+51	schema	^?~…~n|rw|int||10^		n: min=10, max absent	
+52	schema	^?~…~beep|x|freqHz|volume^		beep: mode=x, args = freqHz, volume	
+53	schema	^?~…~freqHz|d|fix2|440.00|20.00|20000.00^		freqHz: mode=d, declaration only; never rendered standalone	
+54	schema	^?~…~q|r|x-custom^		q: unknown type → treat as str	
+55	schema	^?~…~q|zz|int^		q: unrecognized mode → treat as r	
+56	schema	^?~…~note|r|str|a\|b^		note: default is the one sub-value a|b, not two	
+57	schema	^?~_n|x~_d|y~_v|1~_r|128^		incomplete: _i missing	
+58	schema	^?~_i|x~_n|y~_d|z~_v|1~_r|0^		transmit-only device; host never sends	
+59	num	23.45	2	2345	
+60	num	23	2	2300	missing fraction MUST be accepted
+61	num	23.456	2	2346	excess digits round half up
+62	num	-23.456	2	-2346	
+63	num	.5	2	50	missing integer part
+64	num	<empty>	2	REJECT	not zero — §8.4
+65	num	abc	2	REJECT	
+66	num	2 3	2	REJECT	input not fully consumed
+67	num	1.5e3	2	REJECT	no exponent form
+68	stream	^a~1^<LF>		1 line	LF
+69	stream	^a~1^<CR><LF>		1 line	CRLF is ONE terminator
+70	stream	^a~1^<CR>		1 line	CR alone
+71	stream	^a~1^<LF>^b~2^<LF>		2 lines	
+72	stream	^a~1^<CR><LF>^b~2^<CR><LF>		2 lines	no double-dispatch
+73	stream	<LF><LF>^a~1^<LF>		1 line	empty lines ignored
+74	stream	^a~1^		0 lines	no terminator: incomplete
+75	limit	<line longer than _r>		DROP	and the remainder up to the next terminator is discarded too, not reparsed — its tail can begin with ^

@@ -8,23 +8,23 @@
 // Open the port, wait for a heartbeat, send ^?^, and the board answers with a
 // schema describing both. Then:
 //
-//   ^rgb|16711680^      full red      (0xFF0000)
-//   ^rgb|32768^         mid green     (0x008000)
-//   ^rgb|0^             off
+//   ^rgb~16711680^      full red      (0xFF0000)
+//   ^rgb~32768^         mid green     (0x008000)
+//   ^rgb~0^             off
 //
 // Each is echoed back immediately with just that key, so a host sees the colour
 // take effect without waiting for the next tick — and sees the clamp when it
 // overshoots:
 //
-//   ^rgb|16711680^   ->  ^rgb|16711680^
-//   ^rgb|99999999^   ->  ^rgb|16777215^     clamped to the declared maximum
+//   ^rgb~16711680^   ->  ^rgb~16711680^
+//   ^rgb~99999999^   ->  ^rgb~16777215^     clamped to the declared maximum
 //
 // and every two seconds the board sends something like:
 //
-//   ^tempf|78.35~rgb|16711680^
+//   ^tempf~78.35^rgb~16711680^
 //
 // Colour arrives as a plain integer rather than hex because `int` is a
-// standard Upline type that every host already understands (spec §8.2).
+// standard Upline type that every host already understands (spec §8.3).
 //
 // Licence: CC0 / public domain.
 
@@ -34,15 +34,14 @@
 // Lives in flash. min/max let a host build a slider and a colour picker without
 // knowing anything about this board.
 UPLINE_SCHEMA(itsyBitsySchema,
-  // A readable local id, which spec §8.1 allows for one-offs. Every board
+  // A readable local id, which spec §7 allows for one-offs. Every board
   // flashed with this example shares it — give each unit its own before you
   // ship anything, ideally a UUID v4 as unpadded base64url.
-  "uuid|itsybitsy-m4-demo"
-  "~name|ItsyBitsy M4"
-  "~desc|Onboard RGB and die temperature"
-  "~ver|1"
-  "~rgb|int|rw|0|0|16777215"              // 0x000000 .. 0xFFFFFF
-  "~tempf|fix2|r||-40.00|200.00");
+  "_i|itsybitsy-m4-demo"
+  "~_n|ItsyBitsy M4"
+  "~_d|Onboard RGB and die temperature"
+  "~rgb|rw|int|0|0|16777215"              // 0x000000 .. 0xFFFFFF
+  "~tempf|r|fix2||-40.00|200.00");
 
 Upline upline(Serial, itsyBitsySchema);
 
@@ -148,7 +147,7 @@ static uint16_t adcReadAveraged(uint8_t muxPositive) {
 /**
  * Read the die temperature in degrees Fahrenheit.
  *
- * The board hands us a float, which is the case spec §8.4 describes: keep the
+ * The board hands us a float, which is the case spec §8.3 describes: keep the
  * float out of the wire format by converting to a scaled integer here, so the
  * device never links a floating-point text formatter.
  *
@@ -204,11 +203,15 @@ static bool     ackIsPending = false;                      // a command owes a r
  * Called once for every key/value pair the host sends.
  * Unknown keys are ignored, which is what keeps a device forward-compatible.
  */
-void uplineOnKeyValPair(const char* key, const char* value, bool isFlag) {
-  if (isFlag) return;                                      // no flags defined here
-  if (!strcmp(key, "rgb")) {
-    long requested = atol(value);
-    if (requested < 0) requested = 0;                      // clamp to the declared range
+void uplineOnEntry(const UplineEntry& entry) {
+  if (entry.isRead()) {                                    // report without changing
+    if (!strcmp(entry.key, "rgb")) ackIsPending = true;
+    return;
+  }
+  if (!strcmp(entry.key, "rgb")) {
+    int32_t requested;
+    if (!uplineParseNumber(entry.value(0), 0, &requested)) return;   // refuse garbage
+    if (requested < 0) requested = 0;                       // clamp to the declared range
     if (requested > 0xFFFFFF) requested = 0xFFFFFF;
     currentColour = (uint32_t)requested;
     dotStarSetColour(currentColour);
@@ -222,7 +225,7 @@ void setup() {
   pinMode(PIN_DOTSTAR_CLK, OUTPUT);
   dotStarSetColour(0);                                     // start dark
   temperatureBegin();
-  upline.onPair(uplineOnKeyValPair);
+  upline.onEntry(uplineOnEntry);
 }
 
 void loop() {
